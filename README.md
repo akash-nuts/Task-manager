@@ -14,33 +14,20 @@ WhatsApp can be added later by routing its webhook into the same command dispatc
   Exposes structured MCP tools like `create_task`, `update_task`, `search_tasks`, and `comment_task`.
 - `src/http-server.js`
   Accepts Slack and email webhook traffic and converts human messages into Blue task actions.
-- `src/blue-cli.js`
-  Uses Blue's official CLI as the transport layer instead of hard-coding GraphQL mutations.
+- `src/blue-api.js`
+  Talks directly to Blue's GraphQL API, so the same code works locally, on Vercel, and on other Linux hosts.
 - `src/task-router.js`
   Normalizes task actions so every channel uses the same path into Blue.
 
-## Why Blue CLI First
-
-Blue's public docs and official GitHub repos show a supported CLI with records, comments, search, lists, IDs, webhooks, and multi-company support. Using that as the first transport keeps this integration aligned with Blue's own surface area and avoids guessing at GraphQL schema details.
-
 ## Prerequisites
 
-1. Install the Blue CLI from Blue Team's repo:
-   - Repo: https://github.com/heyblueteam/cli
-2. Run `blue init`
-3. Verify access with:
-
-```bash
-blue workspaces list --simple
-```
-
-4. Copy the project config:
+1. Copy the project config:
 
 ```bash
 copy blue-projects.example.json blue-projects.local.json
 ```
 
-5. Fill in your Blue project mapping:
+2. Fill in your Blue project mapping if you want aliases:
    - `company`
    - `workspaceId`
    - `listId`
@@ -49,7 +36,6 @@ copy blue-projects.example.json blue-projects.local.json
 
 Copy `.env.example` to `.env` and set:
 
-- `BLUE_CLI_PATH`
 - `API_URL`
 - `AUTH_TOKEN`
 - `CLIENT_ID`
@@ -60,7 +46,13 @@ Copy `.env.example` to `.env` and set:
 - `EMAIL_SHARED_SECRET`
 - `HTTP_PORT`
 
-The Blue CLI supports project-level environment variables, and this integration passes the root `.env` values through when it invokes the CLI. That means you can keep your Blue credentials in this repo-local `.env` instead of `C:\Users\ADMIN\.config\blue\config.env`.
+`API_URL` should normally stay:
+
+```env
+API_URL=https://api.blue.app/graphql
+```
+
+This app sends those credentials directly to Blue's GraphQL API, so no local Blue CLI install is required for Slack, email, or Vercel deployment.
 
 ## Install
 
@@ -82,24 +74,16 @@ MCP server:
 npm run start:mcp
 ```
 
-## Replit Deploy
+## Vercel Deploy
 
-This project can be deployed to Replit as the public Slack/email webhook service.
-
-Replit should run the HTTP server, not the MCP stdio server.
+This project is now set up to deploy on Vercel.
 
 Included files:
 
-- `.replit`
-- `replit.nix`
+- `vercel.json`
+- `api/index.js`
 
-Run command on Replit:
-
-```bash
-npm run start:http
-```
-
-Set these Replit Secrets:
+Set these Vercel Environment Variables:
 
 - `API_URL`
 - `CLIENT_ID`
@@ -114,16 +98,17 @@ Set these Replit Secrets:
 Recommended values:
 
 ```env
+API_URL=https://api.blue.app/graphql
 SLACK_COMMAND_NAME=/blue
 HTTP_PORT=8787
 ```
 
-After publishing on Replit, use your public app URL for:
+After deployment, use your Vercel domain for:
 
-- `https://your-app.replit.app/slack/events`
-- `https://your-app.replit.app/slack/commands`
-- `https://your-app.replit.app/email/inbound`
-- `https://your-app.replit.app/health`
+- `https://your-app.vercel.app/slack/events`
+- `https://your-app.vercel.app/slack/commands`
+- `https://your-app.vercel.app/email/inbound`
+- `https://your-app.vercel.app/health`
 
 Slack setup after deployment:
 
@@ -247,7 +232,7 @@ That means services like Mailgun, Postmark, and SendGrid can usually be adapted 
 
 ## Deploying For Slack/Email
 
-Slack and email providers need a public URL. For local testing, use a tunnel like `ngrok` or `cloudflared`. For ongoing use, deploy the HTTP server to a public host such as Render, Railway, Fly.io, or a VPS.
+Slack and email providers need a public URL. Vercel is now the simplest path for this repo. For local testing, use a tunnel like `ngrok` or `cloudflared`.
 
 Example local test flow:
 
@@ -280,6 +265,6 @@ To add WhatsApp later, reuse `dispatchHumanCommand()` from `src/task-router.js` 
 
 ## Notes
 
-- This scaffold assumes the Blue CLI is installed and authenticated.
-- Blue CLI output may differ slightly across versions, so live testing against your workspace is still needed.
-- If you want, the next step can be a second transport that talks directly to Blue GraphQL or the official `bluepm` Python SDK for richer typed operations.
+- This scaffold now uses the Blue GraphQL API directly.
+- MCP still works locally through `node src/mcp-server.js`.
+- The Slack/email HTTP app is the deployable piece for Vercel.

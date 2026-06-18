@@ -228,6 +228,16 @@ app.post("/slack/commands", async (req, res) => {
   }
 });
 
-app.listen(config.httpPort, () => {
-  console.log(`Blue integration HTTP server listening on http://localhost:${config.httpPort}`);
-});
+const isDirectRun =
+  process.argv[1] &&
+  new URL(import.meta.url).pathname.replaceAll("/", "\\").endsWith(
+    process.argv[1].replaceAll("/", "\\")
+  );
+
+if (isDirectRun) {
+  app.listen(config.httpPort, () => {
+    console.log(`Blue integration HTTP server listening on http://localhost:${config.httpPort}`);
+  });
+}
+
+export default app;

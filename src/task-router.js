@@ -10,7 +10,7 @@ import {
   resolveWorkspace,
   searchRecords,
   updateRecord
-} from "./blue-cli.js";
+} from "./blue-api.js";
 import { config, getProjectIfConfigured } from "./config.js";
 
 const createTaskSchema = z.object({

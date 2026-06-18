@@ -1,0 +1,557 @@
+import { config } from "./config.js";
+
+const TODO_FIELDS = `
+  id
+  uid
+  title
+  text
+  html
+  done
+  createdAt
+  updatedAt
+  startedAt
+  duedAt
+  todoList {
+    id
+    title
+    project {
+      id
+      name
+      slug
+    }
+  }
+  users {
+    id
+    email
+  }
+  tags {
+    id
+    title
+    color
+  }
+`;
+
+function ensureBlueCredentials() {
+  if (!config.blueClientId || !config.blueAuthToken || !config.blueCompanyId) {
+    throw new Error(
+      "Missing Blue API credentials. Set CLIENT_ID, AUTH_TOKEN, and COMPANY_ID in .env or your Vercel environment."
+    );
+  }
+}
+
+async function blueGraphql(query, variables = {}, options = {}) {
+  ensureBlueCredentials();
+
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Bloo-Token-ID": config.blueClientId,
+    "X-Bloo-Token-Secret": config.blueAuthToken,
+    "X-Bloo-Company-ID": options.companyId || config.blueCompanyId
+  };
+
+  if (options.projectId) {
+    headers["X-Bloo-Project-ID"] = options.projectId;
+  }
+
+  const response = await fetch(config.blueApiUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ query, variables })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Blue API request failed with status ${response.status}.`);
+  }
+
+  const payload = await response.json();
+  if (payload.errors?.length) {
+    throw new Error(payload.errors.map((error) => error.message).join("; "));
+  }
+
+  return payload.data;
+}
+
+function normalizeWorkspace(project) {
+  return {
+    id: project.id,
+    name: project.name,
+    slug: project.slug || "",
+    archived: Boolean(project.archived),
+    extra: project.slug ? `slug:${project.slug}` : ""
+  };
+}
+
+function normalizeList(list) {
+  return {
+    id: list.id,
+    name: list.title,
+    title: list.title,
+    position: list.position,
+    completed: Boolean(list.completed),
+    todosCount: list.todosCount ?? null
+  };
+}
+
+function normalizeTodo(todo) {
+  if (!todo) {
+    return null;
+  }
+
+  return {
+    id: todo.id,
+    uid: todo.uid,
+    title: todo.title,
+    description: todo.text || "",
+    text: todo.text || "",
+    html: todo.html || "",
+    done: Boolean(todo.done),
+    createdAt: todo.createdAt,
+    updatedAt: todo.updatedAt,
+    startedAt: todo.startedAt,
+    duedAt: todo.duedAt,
+    list: todo.todoList
+      ? {
+          id: todo.todoList.id,
+          name: todo.todoList.title,
+          workspaceId: todo.todoList.project?.id || null,
+          workspace: todo.todoList.project?.name || null
+        }
+      : null,
+    assignees: Array.isArray(todo.users)
+      ? todo.users.map((user) => ({
+          id: user.id,
+          email: user.email || ""
+        }))
+      : [],
+    tags: Array.isArray(todo.tags)
+      ? todo.tags.map((tag) => ({
+          id: tag.id,
+          title: tag.title,
+          color: tag.color || ""
+        }))
+      : []
+  };
+}
+
+function parseCustomFields(customFields) {
+  if (!customFields) {
+    return [];
+  }
+
+  if (Array.isArray(customFields)) {
+    return customFields;
+  }
+
+  if (typeof customFields === "string") {
+    const parsed = JSON.parse(customFields);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  }
+
+  return [customFields];
+}
+
+function toCreateTagInputs(tagIds = []) {
+  return tagIds.map((id) => ({ id }));
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+async function setTodoAssignees(todoId, assigneeIds) {
+  if (!assigneeIds) {
+    return null;
+  }
+
+  const mutation = `
+    mutation SetTodoAssignees($input: SetTodoAssigneesInput!) {
+      setTodoAssignees(input: $input) {
+        ${TODO_FIELDS}
+      }
+    }
+  `;
+
+  const data = await blueGraphql(
+    mutation,
+    {
+      input: {
+        todoId,
+        assigneeIds
+      }
+    },
+    { projectId: null }
+  );
+
+  return normalizeTodo(data.setTodoAssignees);
+}
+
+async function setTodoTags(todoId, tagIds) {
+  if (!tagIds) {
+    return null;
+  }
+
+  const mutation = `
+    mutation SetTodoTags($input: SetTodoTagsInput!) {
+      setTodoTags(input: $input) {
+        ${TODO_FIELDS}
+      }
+    }
+  `;
+
+  const data = await blueGraphql(mutation, {
+    input: {
+      todoId,
+      tagIds
+    }
+  });
+
+  return normalizeTodo(data.setTodoTags);
+}
+
+async function setTodoCustomFields(todoId, customFields) {
+  const parsedFields = parseCustomFields(customFields);
+  if (!parsedFields.length) {
+    return [];
+  }
+
+  const mutation = `
+    mutation SetTodoCustomField($input: SetTodoCustomFieldInput!) {
+      setTodoCustomField(input: $input) {
+        id
+      }
+    }
+  `;
+
+  const results = [];
+  for (const field of parsedFields) {
+    const data = await blueGraphql(mutation, {
+      input: {
+        todoId,
+        ...field
+      }
+    });
+    results.push(data.setTodoCustomField);
+  }
+
+  return results;
+}
+
+export async function listWorkspaces() {
+  const query = `
+    query ListWorkspaces($companyId: String!) {
+      projectList(filter: { companyIds: [$companyId] }, first: 200) {
+        items {
+          id
+          name
+          slug
+          archived
+        }
+      }
+    }
+  `;
+
+  const data = await blueGraphql(query, { companyId: config.blueCompanyId });
+  return {
+    data: (data.projectList?.items || []).map(normalizeWorkspace)
+  };
+}
+
+export async function listLists(workspaceRef) {
+  const query = `
+    query ListLists($projectId: String!) {
+      todoLists(projectId: $projectId) {
+        id
+        title
+        position
+        completed
+        todosCount
+      }
+    }
+  `;
+
+  const data = await blueGraphql(query, { projectId: workspaceRef }, { projectId: workspaceRef });
+  return {
+    data: (data.todoLists || []).map(normalizeList)
+  };
+}
+
+export async function resolveWorkspace(workspaceRef) {
+  const result = await listWorkspaces();
+  const workspaces = Array.isArray(result.data) ? result.data : [];
+
+  if (!workspaceRef) {
+    throw new Error("Workspace is required when no configured project alias is provided.");
+  }
+
+  const normalized = workspaceRef.trim().toLowerCase();
+  const exact = workspaces.find((workspace) => {
+    const slug = workspace.slug || "";
+    return (
+      String(workspace.id).toLowerCase() === normalized ||
+      String(workspace.name).toLowerCase() === normalized ||
+      String(slug).toLowerCase() === normalized
+    );
+  });
+
+  if (exact) {
+    return exact;
+  }
+
+  const partialMatches = workspaces.filter((workspace) =>
+    String(workspace.name).toLowerCase().includes(normalized)
+  );
+
+  if (partialMatches.length === 1) {
+    return partialMatches[0];
+  }
+
+  if (partialMatches.length > 1) {
+    throw new Error(
+      `Workspace '${workspaceRef}' is ambiguous. Matches: ${partialMatches
+        .map((workspace) => workspace.name)
+        .join(", ")}`
+    );
+  }
+
+  throw new Error(`Workspace '${workspaceRef}' was not found.`);
+}
+
+export async function resolveList(workspaceRef, listRef) {
+  const result = await listLists(workspaceRef);
+  const lists = Array.isArray(result.data) ? result.data : [];
+
+  if (!listRef) {
+    const preferred =
+      lists.find((list) => String(list.name).toLowerCase() === "backlog") ||
+      lists.find((list) => String(list.name).toLowerCase() === "to do") ||
+      lists[0];
+
+    if (!preferred) {
+      throw new Error(`No lists found in workspace '${workspaceRef}'.`);
+    }
+
+    return preferred;
+  }
+
+  const normalized = listRef.trim().toLowerCase();
+  const exact = lists.find(
+    (list) =>
+      String(list.id).toLowerCase() === normalized || String(list.name).toLowerCase() === normalized
+  );
+
+  if (exact) {
+    return exact;
+  }
+
+  const partialMatches = lists.filter((list) => String(list.name).toLowerCase().includes(normalized));
+
+  if (partialMatches.length === 1) {
+    return partialMatches[0];
+  }
+
+  if (partialMatches.length > 1) {
+    throw new Error(
+      `List '${listRef}' is ambiguous in workspace '${workspaceRef}'. Matches: ${partialMatches
+        .map((list) => list.name)
+        .join(", ")}`
+    );
+  }
+
+  throw new Error(`List '${listRef}' was not found in workspace '${workspaceRef}'.`);
+}
+
+export async function listRecords(project, filters = {}) {
+  const query = `
+    query ListRecords($projectId: String!, $done: Boolean, $assigneeIds: [String!], $first: Int) {
+      todoLists(projectId: $projectId) {
+        id
+        title
+        todos(done: $done, assigneeIds: $assigneeIds, first: $first, orderBy: position) {
+          ${TODO_FIELDS}
+        }
+      }
+    }
+  `;
+
+  const data = await blueGraphql(
+    query,
+    {
+      projectId: project.workspaceId,
+      done: filters.done ?? null,
+      assigneeIds: filters.assignee ? [filters.assignee] : null,
+      first: 100
+    },
+    { projectId: project.workspaceId }
+  );
+
+  const records = [];
+  for (const list of data.todoLists || []) {
+    for (const todo of list.todos || []) {
+      records.push(normalizeTodo(todo));
+    }
+  }
+
+  return { data: records };
+}
+
+export async function searchRecords(project, queryText, filters = {}) {
+  const query = `
+    query SearchRecords($query: String!, $companyId: String!) {
+      search(query: $query, companyId: $companyId) {
+        totalCount
+        hits {
+          _id
+          _source {
+            __typename
+            ... on Todo {
+              ${TODO_FIELDS}
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const data = await blueGraphql(query, {
+    query: queryText,
+    companyId: config.blueCompanyId
+  });
+
+  const results = (data.search?.hits || [])
+    .map((hit) => hit?._source)
+    .filter((source) => source?.__typename === "Todo")
+    .map(normalizeTodo)
+    .filter((todo) => todo?.list?.workspaceId === project.workspaceId)
+    .filter((todo) => (filters.done === undefined ? true : todo.done === filters.done));
+
+  return {
+    data: filters.limit ? results.slice(0, filters.limit) : results
+  };
+}
+
+export async function createRecord(project, input) {
+  const mutation = `
+    mutation CreateRecord($input: CreateTodoInput!) {
+      createTodo(input: $input) {
+        ${TODO_FIELDS}
+      }
+    }
+  `;
+
+  const data = await blueGraphql(
+    mutation,
+    {
+      input: {
+        todoListId: input.listId || project.listId,
+        title: input.title,
+        description: input.description || undefined,
+        assigneeIds: input.assignees?.length ? input.assignees : undefined,
+        tags: input.tagIds?.length ? toCreateTagInputs(input.tagIds) : undefined,
+        customFields: input.customFields ? parseCustomFields(input.customFields) : undefined
+      }
+    },
+    { projectId: project.workspaceId }
+  );
+
+  return {
+    data: normalizeTodo(data.createTodo)
+  };
+}
+
+export async function updateRecord(project, input) {
+  const mutation = `
+    mutation EditRecord($input: EditTodoInput!) {
+      editTodo(input: $input) {
+        ${TODO_FIELDS}
+      }
+    }
+  `;
+
+  const data = await blueGraphql(
+    mutation,
+    {
+      input: {
+        todoId: input.recordId,
+        title: input.title || undefined,
+        text: input.description || undefined
+      }
+    },
+    { projectId: project.workspaceId }
+  );
+
+  let todo = normalizeTodo(data.editTodo);
+
+  if (input.assignees) {
+    todo = (await setTodoAssignees(input.recordId, input.assignees)) || todo;
+  }
+
+  if (input.tagIds) {
+    todo = (await setTodoTags(input.recordId, input.tagIds)) || todo;
+  }
+
+  if (input.customFields) {
+    await setTodoCustomFields(input.recordId, input.customFields);
+  }
+
+  return { data: todo };
+}
+
+export async function moveRecord(project, input) {
+  const mutation = `
+    mutation MoveRecord($input: MoveTodoInput!) {
+      moveTodo(input: $input) {
+        ${TODO_FIELDS}
+      }
+    }
+  `;
+
+  const data = await blueGraphql(
+    mutation,
+    {
+      input: {
+        todoId: input.recordId,
+        todoListId: input.listId
+      }
+    },
+    { projectId: project.workspaceId }
+  );
+
+  return {
+    data: normalizeTodo(data.moveTodo)
+  };
+}
+
+export async function createComment(project, input) {
+  const mutation = `
+    mutation CreateComment($input: CreateCommentInput!) {
+      createComment(input: $input) {
+        id
+        text
+        createdAt
+      }
+    }
+  `;
+
+  const safeText = String(input.text || "").trim();
+  const data = await blueGraphql(
+    mutation,
+    {
+      input: {
+        text: safeText,
+        html: `<p>${escapeHtml(safeText)}</p>`,
+        category: "TODO",
+        categoryId: input.recordId
+      }
+    },
+    { projectId: project.workspaceId }
+  );
+
+  return {
+    data: data.createComment
+  };
+}

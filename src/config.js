@@ -6,7 +6,6 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const ROOT = process.cwd();
-const BUNDLED_BLUE_CLI_PATH = path.join(ROOT, "tools", "blue-cli", "blue.exe");
 const PROJECT_CONFIG_FILES = [
   "blue-projects.local.json",
   "blue-projects.json",
@@ -39,9 +38,10 @@ export const config = {
   rootDir: ROOT,
   projectConfigPath: projectConfig.path,
   projectConfig: projectConfig.data,
-  blueCliPath:
-    process.env.BLUE_CLI_PATH ||
-    (fs.existsSync(BUNDLED_BLUE_CLI_PATH) ? BUNDLED_BLUE_CLI_PATH : "blue"),
+  blueApiUrl: process.env.API_URL || "https://api.blue.app/graphql",
+  blueClientId: process.env.CLIENT_ID || "",
+  blueAuthToken: process.env.AUTH_TOKEN || "",
+  blueCompanyId: process.env.COMPANY_ID || "",
   blueDefaultCompany: process.env.BLUE_DEFAULT_COMPANY || process.env.COMPANY_ID || "",
   blueMcpServerName: process.env.BLUE_MCP_SERVER_NAME || "blue-task-mcp",
   httpPort: Number(process.env.HTTP_PORT || 8787),
