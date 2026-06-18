@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "description": "MCP + Slack + Email bridge for Blue task management.",
   "scripts": {
     "start": "node src/index.js",
