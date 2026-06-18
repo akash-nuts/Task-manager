@@ -1,0 +1,21 @@
+{
+  "defaultProject": "operations",
+  "projects": {
+    "operations": {
+      "company": "acme",
+      "workspaceId": "workspace_123",
+      "listId": "list_todo",
+      "defaultAssignees": [],
+      "defaultTags": []
+    },
+    "mobile": {
+      "company": "acme",
+      "workspaceId": "workspace_456",
+      "listId": "list_backlog",
+      "defaultAssignees": [],
+      "defaultTags": [
+        "Mobile"
+      ]
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "blue": {
+      "command": "node",
+      "args": [
+        "D:/VS/Blue App/src/mcp-server.js"
+      ]
+    }
+  }
+}
