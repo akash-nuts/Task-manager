@@ -228,7 +228,7 @@ app.post("/slack/commands", async (req, res) => {
       text: outcome.message
     });
   } catch (error) {
-    return res.status(400).json({
+    return res.json({
       response_type: "ephemeral",
       text: `Blue command failed: ${error.message}`
     });
