@@ -131,6 +131,15 @@ async function processSlackCommand({ text, fallbackWorkspace, channel, threadTs,
   }
 }
 
+async function executeSlackCommand({ text, fallbackWorkspace }) {
+  const result = await dispatchHumanCommand(text, fallbackWorkspace);
+  return {
+    ok: true,
+    result,
+    message: slackResultText(result)
+  };
+}
+
 app.use("/email/inbound", express.json());
 app.use("/email/inbound", express.urlencoded({ extended: true }));
 
@@ -209,22 +218,20 @@ app.post("/slack/commands", async (req, res) => {
 
     const params = new URLSearchParams(req.body.toString("utf8"));
     const text = params.get("text") || "";
-    const responseUrl = params.get("response_url") || "";
-    const channelId = params.get("channel_id") || "";
-
-    res.json({
-      response_type: "ephemeral",
-      text: "Working on it..."
+    const outcome = await executeSlackCommand({
+      text,
+      fallbackWorkspace: config.slackDefaultProject
     });
 
-    void processSlackCommand({
-      text,
-      fallbackWorkspace: config.slackDefaultProject,
-      channel: channelId,
-      responseUrl
+    return res.json({
+      response_type: "ephemeral",
+      text: outcome.message
     });
   } catch (error) {
-    return res.status(400).json({ ok: false, error: error.message });
+    return res.status(400).json({
+      response_type: "ephemeral",
+      text: `Blue command failed: ${error.message}`
+    });
   }
 });
 
