@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import express from "express";
 import { config } from "./config.js";
-import { dispatchHumanCommand } from "./task-router.js";
+import { findWorkspaceMatches } from "./blue-api.js";
+import { dispatchHumanCommand, dispatchParsedCommand, parseHumanCommand } from "./task-router.js";
 
 const app = express();
 
@@ -15,6 +16,7 @@ app.get("/routes", (_req, res) => {
     routes: {
       slackEvents: "/slack/events",
       slackCommands: "/slack/commands",
+      slackInteractions: "/slack/interactions",
       emailInbound: "/email/inbound"
     }
   });
@@ -63,6 +65,70 @@ function slackResultText(result) {
   const body =
     typeof result.result === "string" ? result.result : JSON.stringify(result.result, null, 2);
   return `${header}\n${body}`;
+}
+
+function toSlackJson(value) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function fromSlackJson(value) {
+  return JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8"));
+}
+
+function buildWorkspaceSelectionResponse(command, candidates, { noGoodMatch = false } = {}) {
+  const subject =
+    command.action === "create"
+      ? `create "${command.payload.title}"`
+      : command.action === "search"
+        ? `search for "${command.payload.query}"`
+        : "continue";
+  const intro = noGoodMatch
+    ? `I couldn't find an exact Blue workspace for "${command.payload.workspace}". Which workspace should I use to ${subject}?`
+    : `I found a few possible workspaces for "${command.payload.workspace}". Which one should I use to ${subject}?`;
+
+  return {
+    response_type: "ephemeral",
+    text: intro,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: intro
+        }
+      },
+      {
+        type: "actions",
+        elements: [
+          ...candidates.slice(0, 5).map((workspace) => ({
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: workspace.archived ? `${workspace.name} (archived)` : workspace.name
+            },
+            action_id: "blue_select_workspace",
+            value: toSlackJson({
+              action: command.action,
+              payload: {
+                ...command.payload,
+                workspace: workspace.name
+              }
+            })
+          })),
+          {
+            type: "button",
+            text: {
+              type: "plain_text",
+              text: "Cancel"
+            },
+            style: "danger",
+            action_id: "blue_cancel_workspace_selection",
+            value: "cancel"
+          }
+        ]
+      }
+    ]
+  };
 }
 
 async function postSlackMessage(channel, text, threadTs) {
@@ -131,12 +197,53 @@ async function processSlackCommand({ text, fallbackWorkspace, channel, threadTs,
   }
 }
 
-async function executeSlackCommand({ text, fallbackWorkspace }) {
-  const result = await dispatchHumanCommand(text, fallbackWorkspace);
+async function prepareSlackCommandResponse({ text, fallbackWorkspace }) {
+  const command = parseHumanCommand(text, fallbackWorkspace);
+  const workspaceRef = command.payload?.workspace;
+
+  if ((command.action === "create" || command.action === "search") && workspaceRef) {
+    const candidates = await findWorkspaceMatches(workspaceRef, {
+      limit: 5,
+      includeArchived: true
+    });
+
+    if (!candidates.length) {
+      const allWorkspaces = await findWorkspaceMatches("", { limit: 5, includeArchived: true });
+      return {
+        type: "selection",
+        payload: buildWorkspaceSelectionResponse(command, allWorkspaces, { noGoodMatch: true })
+      };
+    }
+
+    const [best, second] = candidates;
+    const strongMatch = best.score >= 0.9;
+    const clearWinner = !second || best.score - second.score >= 0.08;
+
+    if (!(strongMatch && clearWinner)) {
+      return {
+        type: "selection",
+        payload: buildWorkspaceSelectionResponse(command, candidates, { noGoodMatch: best.score < 0.9 })
+      };
+    }
+
+    command.payload.workspace = best.name;
+    const result = await dispatchParsedCommand(command);
+    return {
+      type: "result",
+      payload: {
+        response_type: "ephemeral",
+        text: slackResultText(result)
+      }
+    };
+  }
+
+  const result = await dispatchParsedCommand(command);
   return {
-    ok: true,
-    result,
-    message: slackResultText(result)
+    type: "result",
+    payload: {
+      response_type: "ephemeral",
+      text: slackResultText(result)
+    }
   };
 }
 
@@ -168,6 +275,7 @@ app.post("/email/inbound", async (req, res) => {
 
 app.use("/slack/events", express.raw({ type: "application/json" }));
 app.use("/slack/commands", express.raw({ type: "application/x-www-form-urlencoded" }));
+app.use("/slack/interactions", express.raw({ type: "application/x-www-form-urlencoded" }));
 
 app.post("/slack/events", async (req, res) => {
   try {
@@ -218,18 +326,59 @@ app.post("/slack/commands", async (req, res) => {
 
     const params = new URLSearchParams(req.body.toString("utf8"));
     const text = params.get("text") || "";
-    const outcome = await executeSlackCommand({
+    const outcome = await prepareSlackCommandResponse({
       text,
       fallbackWorkspace: config.slackDefaultProject
     });
 
-    return res.json({
-      response_type: "ephemeral",
-      text: outcome.message
-    });
+    return res.json(outcome.payload);
   } catch (error) {
     return res.json({
       response_type: "ephemeral",
+      text: `Blue command failed: ${error.message}`
+    });
+  }
+});
+
+app.post("/slack/interactions", async (req, res) => {
+  try {
+    if (!verifySlackSignature(req)) {
+      return res.status(401).json({ ok: false, error: "Invalid Slack signature" });
+    }
+
+    const params = new URLSearchParams(req.body.toString("utf8"));
+    const payload = JSON.parse(params.get("payload") || "{}");
+
+    if (payload.type !== "block_actions") {
+      return res.json({ ok: true, ignored: true });
+    }
+
+    const action = payload.actions?.[0];
+    if (!action) {
+      return res.json({ ok: true, ignored: true });
+    }
+
+    if (action.action_id === "blue_cancel_workspace_selection") {
+      return res.json({
+        replace_original: true,
+        text: "Canceled."
+      });
+    }
+
+    if (action.action_id !== "blue_select_workspace") {
+      return res.json({ ok: true, ignored: true });
+    }
+
+    const command = fromSlackJson(action.value);
+    const result = await dispatchParsedCommand(command);
+
+    return res.json({
+      replace_original: true,
+      text: slackResultText(result)
+    });
+  } catch (error) {
+    return res.json({
+      replace_original: true,
       text: `Blue command failed: ${error.message}`
     });
   }

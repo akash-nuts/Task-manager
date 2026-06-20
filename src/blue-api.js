@@ -81,6 +81,61 @@ function normalizeWorkspace(project) {
   };
 }
 
+function normalizeLookupValue(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function scoreWorkspaceMatch(workspace, workspaceRef) {
+  const rawQuery = String(workspaceRef || "").trim().toLowerCase();
+  const query = normalizeLookupValue(workspaceRef);
+  if (!query && !rawQuery) {
+    return 0;
+  }
+
+  const id = String(workspace.id || "").toLowerCase();
+  const name = String(workspace.name || "").toLowerCase();
+  const slug = String(workspace.slug || "").toLowerCase();
+  const normalizedName = normalizeLookupValue(workspace.name);
+  const normalizedSlug = normalizeLookupValue(workspace.slug);
+
+  if (rawQuery === id) {
+    return 1;
+  }
+
+  if (rawQuery === name || rawQuery === slug) {
+    return 0.99;
+  }
+
+  if (query === normalizedName || query === normalizedSlug) {
+    return 0.97;
+  }
+
+  if (normalizedName.startsWith(query) || normalizedSlug.startsWith(query)) {
+    return 0.91;
+  }
+
+  if (normalizedName.includes(query) || normalizedSlug.includes(query)) {
+    return 0.84;
+  }
+
+  const queryTokens = query.split(" ").filter(Boolean);
+  const nameTokens = normalizedName.split(" ").filter(Boolean);
+  const slugTokens = normalizedSlug.split(" ").filter(Boolean);
+  const tokenUniverse = new Set([...nameTokens, ...slugTokens]);
+  const matchedTokens = queryTokens.filter((token) =>
+    [...tokenUniverse].some((candidate) => candidate.includes(token) || token.includes(candidate))
+  ).length;
+
+  if (matchedTokens > 0) {
+    return 0.55 + matchedTokens / Math.max(queryTokens.length, 1) * 0.25;
+  }
+
+  return 0;
+}
+
 function normalizeList(list) {
   return {
     id: list.id,
@@ -261,6 +316,33 @@ export async function listWorkspaces() {
   };
 }
 
+export async function findWorkspaceMatches(workspaceRef, { limit = 5, includeArchived = true } = {}) {
+  const result = await listWorkspaces();
+  const workspaces = (Array.isArray(result.data) ? result.data : []).filter(
+    (workspace) => includeArchived || !workspace.archived
+  );
+
+  if (!String(workspaceRef || "").trim()) {
+    return workspaces
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .slice(0, limit)
+      .map((workspace) => ({
+        ...workspace,
+        score: 0
+      }));
+  }
+
+  const scored = workspaces
+    .map((workspace) => ({
+      ...workspace,
+      score: scoreWorkspaceMatch(workspace, workspaceRef)
+    }))
+    .filter((workspace) => workspace.score > 0)
+    .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name));
+
+  return scored.slice(0, limit);
+}
+
 export async function listLists(workspaceRef) {
   const query = `
     query ListLists($projectId: String!) {
@@ -291,10 +373,13 @@ export async function resolveWorkspace(workspaceRef) {
   const normalized = workspaceRef.trim().toLowerCase();
   const exact = workspaces.find((workspace) => {
     const slug = workspace.slug || "";
+    const normalizedQuery = normalizeLookupValue(workspaceRef);
     return (
       String(workspace.id).toLowerCase() === normalized ||
       String(workspace.name).toLowerCase() === normalized ||
-      String(slug).toLowerCase() === normalized
+      String(slug).toLowerCase() === normalized ||
+      normalizeLookupValue(workspace.name) === normalizedQuery ||
+      normalizeLookupValue(slug) === normalizedQuery
     );
   });
 
@@ -303,7 +388,9 @@ export async function resolveWorkspace(workspaceRef) {
   }
 
   const partialMatches = workspaces.filter((workspace) =>
-    String(workspace.name).toLowerCase().includes(normalized)
+    String(workspace.name).toLowerCase().includes(normalized) ||
+    normalizeLookupValue(workspace.name).includes(normalizeLookupValue(workspaceRef)) ||
+    normalizeLookupValue(workspace.slug).includes(normalizeLookupValue(workspaceRef))
   );
 
   if (partialMatches.length === 1) {

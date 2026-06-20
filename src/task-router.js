@@ -412,7 +412,10 @@ export function parseHumanCommand(text, fallbackWorkspace) {
 
 export async function dispatchHumanCommand(text, fallbackWorkspace) {
   const command = parseHumanCommand(text, fallbackWorkspace);
+  return dispatchParsedCommand(command);
+}
 
+export async function dispatchParsedCommand(command) {
   switch (command.action) {
     case "create":
       return handleCreateTask(command.payload);
