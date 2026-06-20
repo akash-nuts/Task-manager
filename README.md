@@ -169,6 +169,7 @@ Examples:
 
 This version supports a lightweight command syntax:
 
+- `create a task in DataCX - Active | Fix login timeout on Safari login page | Akash H`
 - `create in MA-EU: Fix login timeout | desc: Session expires after 5 min | assignee: Akash H`
 - `bulk create in DataCX - Active: desc: Q3 launch tasks | assignee: Akash H | Task A ; Task B ; Task C`
 - `search in 4ay-AI-CRM: onboarding`
@@ -211,6 +212,7 @@ Optional slash command setup:
 3. Then use commands like:
 
 ```text
+/blue create a task in DataCX - Active | Fix login timeout on Safari login page | Akash H
 /blue create in MA-EU: Fix login timeout | desc: Session expires after 5 min | assignee: Akash H
 /blue bulk create in DataCX - Active: desc: Q3 launch tasks | assignee: Akash H | Fix login timeout ; Add QA checklist ; Review handoff
 /blue search in 4ay-AI-CRM: onboarding

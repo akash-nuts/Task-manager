@@ -315,7 +315,7 @@ export function parseHumanCommand(text, fallbackWorkspace) {
 
   function unsupportedFormatError(suggestion) {
     const base =
-      "Unsupported command format. Try 'create in DataCX - Active: Fix login bug | desc: ... | assignee: Akash H', 'bulk create in DataCX - Active: desc: ... | assignee: Akash H | Task A ; Task B', or 'search in 4ay-AI-CRM: onboarding'.";
+      "Unsupported command format. Try 'create a task in DataCX - Active | Fix login timeout on Safari login page | Akash H', 'create in DataCX - Active: Fix login bug | desc: ... | assignee: Akash H', 'bulk create in DataCX - Active: desc: ... | assignee: Akash H | Task A ; Task B', or 'search in 4ay-AI-CRM: onboarding'.";
 
     if (!suggestion) {
       throw new Error(base);
@@ -421,6 +421,52 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
+  function deriveTitleFromDescription(description) {
+    const cleaned = String(description || "").replace(/\s+/g, " ").trim();
+    if (!cleaned) {
+      return "";
+    }
+
+    const sentenceMatch = cleaned.match(/^(.+?[.!?])(?:\s|$)/);
+    const candidate = sentenceMatch ? sentenceMatch[1] : cleaned;
+    const trimmedCandidate = candidate.replace(/[.!?]+$/, "").trim();
+
+    if (trimmedCandidate.length <= 80) {
+      return trimmedCandidate;
+    }
+
+    const shortened = trimmedCandidate.slice(0, 77).trimEnd();
+    return `${shortened}...`;
+  }
+
+  function parseSimpleCreateSegments(rawBody) {
+    const segments = String(rawBody || "")
+      .split("|")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    if (segments.length < 2) {
+      throw new Error(
+        "Use this format for quick create: 'create a task in DataCX - Active | Task description | Assignee'."
+      );
+    }
+
+    const [description, assigneeSegment] = segments;
+    const assignees = assigneeSegment
+      .split(/\s*,\s*/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    const payload = {
+      title: deriveTitleFromDescription(description),
+      description: description.trim(),
+      assignees
+    };
+
+    validateCreateRequirements(payload);
+    return payload;
+  }
+
   function parseBulkBody(rawBody) {
     const raw = String(rawBody || "");
     const splitLines = raw.split(/\r?\n/);
@@ -501,6 +547,18 @@ export function parseHumanCommand(text, fallbackWorkspace) {
       action: "bulk_create",
       payload: {
         workspace: naturalBulkCreateMatch[2].trim(),
+        ...parsedBody
+      }
+    };
+  }
+
+  const simpleCreateMatch = trimmed.match(/^create\s+(?:a\s+)?task\s+in\s+(.+?)\s*\|\s*([\s\S]+)$/i);
+  if (simpleCreateMatch) {
+    const parsedBody = parseSimpleCreateSegments(simpleCreateMatch[2]);
+    return {
+      action: "create",
+      payload: {
+        workspace: simpleCreateMatch[1].trim(),
         ...parsedBody
       }
     };
