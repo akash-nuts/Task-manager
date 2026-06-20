@@ -37,6 +37,8 @@ copy blue-projects.example.json blue-projects.local.json
 Copy `.env.example` to `.env` and set:
 
 - `API_URL`
+- `BLUE_WEB_BASE_URL`
+- `BLUE_TASK_URL_TEMPLATE`
 - `AUTH_TOKEN`
 - `CLIENT_ID`
 - `COMPANY_ID`
@@ -51,6 +53,22 @@ Copy `.env.example` to `.env` and set:
 ```env
 API_URL=https://api.blue.app/graphql
 ```
+
+Optional direct task links in Slack:
+
+```env
+BLUE_WEB_BASE_URL=https://blue.app
+BLUE_TASK_URL_TEMPLATE=
+```
+
+`BLUE_TASK_URL_TEMPLATE` is optional. If you know your Blue task URL pattern, you can use placeholders:
+
+- `{baseUrl}`
+- `{companyId}`
+- `{workspaceSlug}`
+- `{workspaceId}`
+- `{taskUid}`
+- `{taskId}`
 
 This app sends those credentials directly to Blue's GraphQL API, so no local Blue CLI install is required for Slack, email, or Vercel deployment.
 

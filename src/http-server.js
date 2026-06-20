@@ -61,10 +61,71 @@ function verifySlackSignature(req) {
 }
 
 function slackResultText(result) {
-  const header = `Workspace: ${result.workspace || result.project}`;
-  const body =
-    typeof result.result === "string" ? result.result : JSON.stringify(result.result, null, 2);
-  return `${header}\n${body}`;
+  const workspace = result.workspace || result.project || "Blue";
+  const list = result.list ? ` in ${result.list}` : "";
+
+  if (!result?.result || typeof result.result === "string") {
+    return `Completed in ${workspace}${list}.\n${result.result || ""}`.trim();
+  }
+
+  if (typeof result.result === "object" && Number.isInteger(result.result.createdCount)) {
+    const items = result.result.created || [];
+    const lines = [`Created ${result.result.createdCount} tasks successfully in ${workspace}${list}.`];
+
+    items.forEach((task, index) => {
+      const link = buildBlueTaskUrl(task);
+      const assignees = formatAssignees(task.assignees);
+      const description = task.description ? ` Description: ${task.description}` : "";
+      lines.push(
+        `${index + 1}. ${task.title}${assignees ? ` | Assignee: ${assignees}` : ""}${description}${
+          link ? ` | Link: ${link}` : ""
+        }`
+      );
+    });
+
+    return lines.join("\n");
+  }
+
+  if (typeof result.result === "object" && result.result.title) {
+    const link = buildBlueTaskUrl(result.result);
+    const assignees = formatAssignees(result.result.assignees);
+    const description = result.result.description ? ` Description: ${result.result.description}` : "";
+    return [
+      `Created task "${result.result.title}" successfully in ${workspace}${list}.`,
+      assignees ? `Assignee: ${assignees}.` : null,
+      description ? description.trim() : null,
+      link ? `Link: ${link}` : null
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return `Completed in ${workspace}${list}.\n${JSON.stringify(result.result, null, 2)}`;
+}
+
+function formatAssignees(assignees = []) {
+  if (!Array.isArray(assignees) || !assignees.length) {
+    return "";
+  }
+
+  return assignees
+    .map((assignee) => assignee.email || assignee.id)
+    .filter(Boolean)
+    .join(", ");
+}
+
+function buildBlueTaskUrl(task) {
+  if (!task || !config.blueTaskUrlTemplate) {
+    return null;
+  }
+
+  return config.blueTaskUrlTemplate
+    .replaceAll("{baseUrl}", config.blueWebBaseUrl)
+    .replaceAll("{companyId}", config.blueCompanyId)
+    .replaceAll("{workspaceSlug}", task.list?.workspaceSlug || "")
+    .replaceAll("{workspaceId}", task.list?.workspaceId || "")
+    .replaceAll("{taskUid}", task.uid || "")
+    .replaceAll("{taskId}", task.id || "");
 }
 
 function toSlackJson(value) {

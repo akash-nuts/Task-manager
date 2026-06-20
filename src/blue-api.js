@@ -169,7 +169,8 @@ function normalizeTodo(todo) {
           id: todo.todoList.id,
           name: todo.todoList.title,
           workspaceId: todo.todoList.project?.id || null,
-          workspace: todo.todoList.project?.name || null
+          workspace: todo.todoList.project?.name || null,
+          workspaceSlug: todo.todoList.project?.slug || null
         }
       : null,
     assignees: Array.isArray(todo.users)

@@ -39,6 +39,8 @@ export const config = {
   projectConfigPath: projectConfig.path,
   projectConfig: projectConfig.data,
   blueApiUrl: process.env.API_URL || "https://api.blue.app/graphql",
+  blueWebBaseUrl: process.env.BLUE_WEB_BASE_URL || "https://blue.app",
+  blueTaskUrlTemplate: process.env.BLUE_TASK_URL_TEMPLATE || "",
   blueClientId: process.env.CLIENT_ID || "",
   blueAuthToken: process.env.AUTH_TOKEN || "",
   blueCompanyId: process.env.COMPANY_ID || "",
