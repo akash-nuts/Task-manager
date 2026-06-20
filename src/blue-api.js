@@ -188,6 +188,17 @@ function normalizeTodo(todo) {
   };
 }
 
+function normalizeUser(user) {
+  return {
+    id: user.id,
+    email: user.email || "",
+    username: user.username || "",
+    fullName: user.fullName || "",
+    firstName: user.firstName || "",
+    lastName: user.lastName || ""
+  };
+}
+
 function parseCustomFields(customFields) {
   if (!customFields) {
     return [];
@@ -360,6 +371,99 @@ export async function listLists(workspaceRef) {
   return {
     data: (data.todoLists || []).map(normalizeList)
   };
+}
+
+export async function listWorkspaceUsers(workspaceRef) {
+  const query = `
+    query ListWorkspaceUsers($projectId: String!, $first: Int) {
+      projectUserList(projectId: $projectId, first: $first) {
+        users {
+          id
+          email
+          username
+          fullName
+          firstName
+          lastName
+        }
+        totalCount
+      }
+    }
+  `;
+
+  const data = await blueGraphql(query, { projectId: workspaceRef, first: 200 }, { projectId: workspaceRef });
+  return {
+    data: (data.projectUserList?.users || []).map(normalizeUser)
+  };
+}
+
+export async function resolveAssignees(workspaceRef, assigneeRefs) {
+  const refs = (assigneeRefs || []).map((value) => String(value || "").trim()).filter(Boolean);
+  if (!refs.length) {
+    throw new Error("At least one assignee is required.");
+  }
+
+  const result = await listWorkspaceUsers(workspaceRef);
+  const users = Array.isArray(result.data) ? result.data : [];
+  if (!users.length) {
+    throw new Error("No workspace members were found to assign this task to.");
+  }
+
+  const resolved = [];
+  for (const ref of refs) {
+    const normalized = normalizeLookupValue(ref);
+    const exact = users.find((user) => {
+      return (
+        String(user.id).toLowerCase() === ref.toLowerCase() ||
+        String(user.email).toLowerCase() === ref.toLowerCase() ||
+        String(user.username).toLowerCase() === ref.toLowerCase() ||
+        normalizeLookupValue(user.fullName) === normalized ||
+        normalizeLookupValue(`${user.firstName} ${user.lastName}`) === normalized
+      );
+    });
+
+    if (exact) {
+      resolved.push(exact);
+      continue;
+    }
+
+    const partialMatches = users.filter((user) => {
+      return (
+        normalizeLookupValue(user.fullName).includes(normalized) ||
+        normalizeLookupValue(`${user.firstName} ${user.lastName}`).includes(normalized) ||
+        String(user.username).toLowerCase().includes(ref.toLowerCase()) ||
+        String(user.email).toLowerCase().includes(ref.toLowerCase())
+      );
+    });
+
+    if (partialMatches.length === 1) {
+      resolved.push(partialMatches[0]);
+      continue;
+    }
+
+    if (partialMatches.length > 1) {
+      throw new Error(
+        `Assignee '${ref}' is ambiguous. Matches: ${partialMatches
+          .map((user) => user.fullName || user.username || user.email || user.id)
+          .join(", ")}`
+      );
+    }
+
+    throw new Error(
+      `Assignee '${ref}' was not found in this workspace. Available users include: ${users
+        .slice(0, 5)
+        .map((user) => user.fullName || user.username || user.email || user.id)
+        .join(", ")}`
+    );
+  }
+
+  const unique = [];
+  for (const user of resolved) {
+    if (!unique.find((item) => item.id === user.id)) {
+      unique.push(user);
+    }
+  }
+
+  return unique;
 }
 
 export async function resolveWorkspace(workspaceRef) {

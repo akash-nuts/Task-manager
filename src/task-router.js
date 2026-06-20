@@ -6,6 +6,7 @@ import {
   listRecords,
   listWorkspaces,
   moveRecord,
+  resolveAssignees,
   resolveList,
   resolveWorkspace,
   searchRecords,
@@ -17,8 +18,8 @@ const createTaskSchema = z.object({
   project: z.string().optional(),
   workspace: z.string().optional(),
   title: z.string().min(1),
-  description: z.string().optional(),
-  assignees: z.array(z.string()).optional(),
+  description: z.string().min(1),
+  assignees: z.array(z.string().min(1)).min(1),
   tagIds: z.array(z.string()).optional(),
   customFields: z.string().optional(),
   list: z.string().optional(),
@@ -29,7 +30,8 @@ const bulkCreateTaskSchema = z.object({
   project: z.string().optional(),
   workspace: z.string().optional(),
   titles: z.array(z.string().min(1)).min(1).max(100),
-  assignees: z.array(z.string()).optional(),
+  description: z.string().min(1),
+  assignees: z.array(z.string().min(1)).min(1),
   tagIds: z.array(z.string()).optional(),
   customFields: z.string().optional(),
   list: z.string().optional(),
@@ -123,13 +125,23 @@ async function resolveTargetContext(input = {}) {
   return { project, workspace, list };
 }
 
+async function resolveCreateDefaults(target, parsed) {
+  const assigneeUsers = await resolveAssignees(target.project.workspaceId, parsed.assignees);
+
+  return {
+    assigneeIds: assigneeUsers.map((user) => user.id),
+    assigneeUsers
+  };
+}
+
 export async function handleCreateTask(input) {
   const parsed = createTaskSchema.parse(input);
   const target = await resolveTargetContext(parsed);
+  const resolved = await resolveCreateDefaults(target, parsed);
   const result = await createRecord(target.project, {
     ...parsed,
     listId: parsed.listId || target.list.id,
-    assignees: parsed.assignees?.length ? parsed.assignees : target.project.defaultAssignees,
+    assignees: resolved.assigneeIds,
     tagIds: parsed.tagIds?.length ? parsed.tagIds : target.project.defaultTags
   });
 
@@ -145,6 +157,7 @@ export async function handleCreateTask(input) {
 export async function handleBulkCreateTask(input) {
   const parsed = bulkCreateTaskSchema.parse(input);
   const target = await resolveTargetContext(parsed);
+  const resolved = await resolveCreateDefaults(target, parsed);
   const titles = parsed.titles.map((title) => title.trim()).filter(Boolean);
   const created = [];
 
@@ -153,7 +166,7 @@ export async function handleBulkCreateTask(input) {
       ...parsed,
       title,
       listId: parsed.listId || target.list.id,
-      assignees: parsed.assignees?.length ? parsed.assignees : target.project.defaultAssignees,
+      assignees: resolved.assigneeIds,
       tagIds: parsed.tagIds?.length ? parsed.tagIds : target.project.defaultTags
     });
 
@@ -302,7 +315,7 @@ export function parseHumanCommand(text, fallbackWorkspace) {
 
   function unsupportedFormatError(suggestion) {
     const base =
-      "Unsupported command format. Try 'create in DataCX - Active: Fix login bug', 'bulk create in DataCX - Active: Task A | Task B', or 'search in 4ay-AI-CRM: onboarding'.";
+      "Unsupported command format. Try 'create in DataCX - Active: Fix login bug | desc: ... | assignee: Akash H', 'bulk create in DataCX - Active: desc: ... | assignee: Akash H | Task A ; Task B', or 'search in 4ay-AI-CRM: onboarding'.";
 
     if (!suggestion) {
       throw new Error(base);
@@ -350,6 +363,117 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     return uniqueItems;
   }
 
+  function parseMetadataToken(token) {
+    const match = String(token || "").trim().match(/^(desc|description|assignee|assignees)\s*:\s*(.+)$/i);
+    if (!match) {
+      return null;
+    }
+
+    const key = match[1].toLowerCase();
+    const value = match[2].trim();
+    if (!value) {
+      return null;
+    }
+
+    if (key === "desc" || key === "description") {
+      return { key: "description", value };
+    }
+
+    return {
+      key: "assignees",
+      value: value
+        .split(/\s*,\s*/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    };
+  }
+
+  function parseCreateBody(rawBody) {
+    const segments = String(rawBody || "")
+      .split("|")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    const titleParts = [];
+    const metadata = {};
+
+    for (const segment of segments) {
+      const parsedToken = parseMetadataToken(segment);
+      if (!parsedToken) {
+        titleParts.push(segment);
+        continue;
+      }
+
+      metadata[parsedToken.key] = parsedToken.value;
+    }
+
+    const title = titleParts.join(" | ").trim();
+    if (!title) {
+      throw new Error(
+        "Create needs a task title. Example: 'create in DataCX - Active: Fix login timeout | desc: Session expires after 5 min | assignee: Akash H'."
+      );
+    }
+
+    return {
+      title,
+      description: metadata.description || "",
+      assignees: metadata.assignees || []
+    };
+  }
+
+  function parseBulkBody(rawBody) {
+    const raw = String(rawBody || "");
+    const splitLines = raw.split(/\r?\n/);
+    const header = splitLines[0] || "";
+    const bodyLines = splitLines.slice(1);
+
+    const headerSegments = header
+      .split("|")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    const metadata = {};
+    const contentSegments = [];
+    for (const segment of headerSegments) {
+      const parsedToken = parseMetadataToken(segment);
+      if (parsedToken) {
+        metadata[parsedToken.key] = parsedToken.value;
+      } else {
+        contentSegments.push(segment);
+      }
+    }
+
+    const content =
+      bodyLines.filter((line) => line.trim()).length > 0
+        ? bodyLines.join("\n")
+        : contentSegments.join(" | ");
+
+    const titles = parseBulkTitles(content);
+    return {
+      titles,
+      description: metadata.description || "",
+      assignees: metadata.assignees || []
+    };
+  }
+
+  function validateCreateRequirements(payload, { bulk = false } = {}) {
+    if (!payload.description) {
+      throw new Error(
+        bulk
+          ? "Bulk create requires a shared description. Example: 'bulk create in DataCX - Active: desc: Q3 launch tasks | assignee: Akash H | Task A ; Task B'."
+          : "Create requires a description. Example: 'create in DataCX - Active: Fix login timeout | desc: Session expires after 5 min | assignee: Akash H'."
+      );
+    }
+
+    if (!payload.assignees?.length) {
+      throw new Error(
+        bulk
+          ? "Bulk create requires an assignee. Example: 'bulk create in DataCX - Active: desc: Q3 launch tasks | assignee: Akash H | Task A ; Task B'."
+          : "Create requires an assignee. Example: 'create in DataCX - Active: Fix login timeout | desc: Session expires after 5 min | assignee: Akash H'."
+      );
+    }
+  }
+
   const bulkCreateMatch = trimmed.match(/^(?:bulk\s+create|create\s+tasks?)(?:\s+in\s+(.+?))?\s*:\s*([\s\S]+)$/i);
   if (bulkCreateMatch) {
     if (!bulkCreateMatch[1] && !fallbackWorkspace) {
@@ -358,22 +482,26 @@ export function parseHumanCommand(text, fallbackWorkspace) {
       );
     }
 
+    const parsedBody = parseBulkBody(bulkCreateMatch[2]);
+    validateCreateRequirements(parsedBody, { bulk: true });
     return {
       action: "bulk_create",
       payload: {
         workspace: bulkCreateMatch[1]?.trim() || fallbackWorkspace,
-        titles: parseBulkTitles(bulkCreateMatch[2])
+        ...parsedBody
       }
     };
   }
 
   const naturalBulkCreateMatch = normalizedSpaces.match(/^(?:bulk\s+create|create\s+tasks?)\s+(.+?)\s+in\s+(.+)$/i);
   if (naturalBulkCreateMatch) {
+    const parsedBody = parseBulkBody(naturalBulkCreateMatch[1]);
+    validateCreateRequirements(parsedBody, { bulk: true });
     return {
       action: "bulk_create",
       payload: {
         workspace: naturalBulkCreateMatch[2].trim(),
-        titles: parseBulkTitles(naturalBulkCreateMatch[1])
+        ...parsedBody
       }
     };
   }
@@ -386,33 +514,39 @@ export function parseHumanCommand(text, fallbackWorkspace) {
       );
     }
 
+    const parsedBody = parseCreateBody(createMatch[2]);
+    validateCreateRequirements(parsedBody);
     return {
       action: "create",
       payload: {
         workspace: createMatch[1]?.trim() || fallbackWorkspace,
-        title: createMatch[2].trim()
+        ...parsedBody
       }
     };
   }
 
   const naturalCreateMatch = normalizedSpaces.match(/^create\s+(.+?)\s+in\s+(.+)$/i);
   if (naturalCreateMatch) {
+    const parsedBody = parseCreateBody(naturalCreateMatch[1]);
+    validateCreateRequirements(parsedBody);
     return {
       action: "create",
       payload: {
         workspace: naturalCreateMatch[2].trim(),
-        title: naturalCreateMatch[1].trim()
+        ...parsedBody
       }
     };
   }
 
   const createMissingColonMatch = normalizedSpaces.match(/^create\s+in\s+(.+?)\s+(.+)$/i);
   if (createMissingColonMatch) {
+    const parsedBody = parseCreateBody(createMissingColonMatch[2]);
+    validateCreateRequirements(parsedBody);
     return {
       action: "create",
       payload: {
         workspace: createMissingColonMatch[1].trim(),
-        title: createMissingColonMatch[2].trim()
+        ...parsedBody
       }
     };
   }
