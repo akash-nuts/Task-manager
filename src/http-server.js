@@ -115,8 +115,16 @@ function formatAssignees(assignees = []) {
 }
 
 function buildBlueTaskUrl(task) {
-  if (!task || !config.blueTaskUrlTemplate) {
+  if (!task) {
     return null;
+  }
+
+  if (!config.blueTaskUrlTemplate) {
+    if (!task.list?.workspaceSlug || !task.id) {
+      return null;
+    }
+
+    return `${config.blueWebBaseUrl}/org/${config.blueCompanyId}/workspace/${task.list.workspaceSlug}/records/board/${task.id}`;
   }
 
   return config.blueTaskUrlTemplate
