@@ -253,6 +253,23 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     throw new Error("Command text is empty.");
   }
 
+  const normalizedSpaces = trimmed.replace(/\s+/g, " ").trim();
+
+  function workspaceSuggestion(workspace, actionText) {
+    return `${actionText} in ${workspace}: `;
+  }
+
+  function unsupportedFormatError(suggestion) {
+    const base =
+      "Unsupported command format. Try 'create in DataCX - Active: Fix login bug' or 'search in 4ay-AI-CRM: onboarding'.";
+
+    if (!suggestion) {
+      throw new Error(base);
+    }
+
+    throw new Error(`${base} Did you mean: '${suggestion}'?`);
+  }
+
   const createMatch = trimmed.match(/^create(?:\s+in\s+(.+?))?\s*:\s*(.+)$/i);
   if (createMatch) {
     if (!createMatch[1] && !fallbackWorkspace) {
@@ -266,6 +283,28 @@ export function parseHumanCommand(text, fallbackWorkspace) {
       payload: {
         workspace: createMatch[1]?.trim() || fallbackWorkspace,
         title: createMatch[2].trim()
+      }
+    };
+  }
+
+  const naturalCreateMatch = normalizedSpaces.match(/^create\s+(.+?)\s+in\s+(.+)$/i);
+  if (naturalCreateMatch) {
+    return {
+      action: "create",
+      payload: {
+        workspace: naturalCreateMatch[2].trim(),
+        title: naturalCreateMatch[1].trim()
+      }
+    };
+  }
+
+  const createMissingColonMatch = normalizedSpaces.match(/^create\s+in\s+(.+?)\s+(.+)$/i);
+  if (createMissingColonMatch) {
+    return {
+      action: "create",
+      payload: {
+        workspace: createMissingColonMatch[1].trim(),
+        title: createMissingColonMatch[2].trim()
       }
     };
   }
@@ -288,6 +327,18 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
+  const naturalCommentMatch = normalizedSpaces.match(/^comment\s+on\s+(\S+)\s+(.+)$/i);
+  if (naturalCommentMatch) {
+    return {
+      action: "comment",
+      payload: {
+        workspace: fallbackWorkspace,
+        recordId: naturalCommentMatch[1],
+        text: naturalCommentMatch[2].trim()
+      }
+    };
+  }
+
   const moveMatch = trimmed.match(/^move\s+(\S+)\s+to\s+(.+)$/i);
   if (moveMatch) {
     if (!fallbackWorkspace) {
@@ -302,6 +353,18 @@ export function parseHumanCommand(text, fallbackWorkspace) {
         workspace: fallbackWorkspace,
         recordId: moveMatch[1],
         list: moveMatch[2].trim()
+      }
+    };
+  }
+
+  const naturalMoveMatch = normalizedSpaces.match(/^move\s+task\s+(\S+)\s+to\s+(.+)$/i);
+  if (naturalMoveMatch) {
+    return {
+      action: "move",
+      payload: {
+        workspace: fallbackWorkspace,
+        recordId: naturalMoveMatch[1],
+        list: naturalMoveMatch[2].trim()
       }
     };
   }
@@ -323,9 +386,28 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
-  throw new Error(
-    "Unsupported command format. Try 'create in MA-EU: Fix login bug' or 'search in 4ay-AI-CRM: onboarding'."
-  );
+  const naturalSearchMatch = normalizedSpaces.match(/^search\s+(.+?)\s+in\s+(.+)$/i);
+  if (naturalSearchMatch) {
+    return {
+      action: "search",
+      payload: {
+        workspace: naturalSearchMatch[2].trim(),
+        query: naturalSearchMatch[1].trim()
+      }
+    };
+  }
+
+  const createWorkspaceGuess = normalizedSpaces.match(/^create\s+(.+)$/i);
+  if (createWorkspaceGuess && fallbackWorkspace) {
+    unsupportedFormatError(`${workspaceSuggestion(fallbackWorkspace, "create")}${createWorkspaceGuess[1].trim()}`);
+  }
+
+  const searchWorkspaceGuess = normalizedSpaces.match(/^search\s+(.+)$/i);
+  if (searchWorkspaceGuess && fallbackWorkspace) {
+    unsupportedFormatError(`${workspaceSuggestion(fallbackWorkspace, "search")}${searchWorkspaceGuess[1].trim()}`);
+  }
+
+  unsupportedFormatError(null);
 }
 
 export async function dispatchHumanCommand(text, fallbackWorkspace) {
