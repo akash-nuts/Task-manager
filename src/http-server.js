@@ -79,6 +79,8 @@ function buildWorkspaceSelectionResponse(command, candidates, { noGoodMatch = fa
   const subject =
     command.action === "create"
       ? `create "${command.payload.title}"`
+      : command.action === "bulk_create"
+        ? `create ${command.payload.titles.length} tasks`
       : command.action === "search"
         ? `search for "${command.payload.query}"`
         : "continue";
@@ -201,7 +203,7 @@ async function prepareSlackCommandResponse({ text, fallbackWorkspace }) {
   const command = parseHumanCommand(text, fallbackWorkspace);
   const workspaceRef = command.payload?.workspace;
 
-  if ((command.action === "create" || command.action === "search") && workspaceRef) {
+  if ((command.action === "create" || command.action === "bulk_create" || command.action === "search") && workspaceRef) {
     const candidates = await findWorkspaceMatches(workspaceRef, {
       limit: 5,
       includeArchived: true

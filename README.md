@@ -152,6 +152,7 @@ Examples:
 This version supports a lightweight command syntax:
 
 - `create in MA-EU: Fix login timeout`
+- `bulk create in DataCX - Active: Task A | Task B | Task C`
 - `search in 4ay-AI-CRM: onboarding`
 - `comment rec_123: Please prioritize this`
 - `move rec_123 to Done`
@@ -193,6 +194,7 @@ Optional slash command setup:
 
 ```text
 /blue create in MA-EU: Fix login timeout
+/blue bulk create in DataCX - Active: Fix login timeout | Add QA checklist | Review handoff
 /blue search in 4ay-AI-CRM: onboarding
 ```
 

@@ -25,6 +25,17 @@ const createTaskSchema = z.object({
   listId: z.string().optional()
 });
 
+const bulkCreateTaskSchema = z.object({
+  project: z.string().optional(),
+  workspace: z.string().optional(),
+  titles: z.array(z.string().min(1)).min(1).max(100),
+  assignees: z.array(z.string()).optional(),
+  tagIds: z.array(z.string()).optional(),
+  customFields: z.string().optional(),
+  list: z.string().optional(),
+  listId: z.string().optional()
+});
+
 const updateTaskSchema = z.object({
   project: z.string().optional(),
   workspace: z.string().optional(),
@@ -128,6 +139,36 @@ export async function handleCreateTask(input) {
     workspaceId: target.project.workspaceId,
     list: target.list.name,
     result: result.data || result.stdout
+  };
+}
+
+export async function handleBulkCreateTask(input) {
+  const parsed = bulkCreateTaskSchema.parse(input);
+  const target = await resolveTargetContext(parsed);
+  const titles = parsed.titles.map((title) => title.trim()).filter(Boolean);
+  const created = [];
+
+  for (const title of titles) {
+    const result = await createRecord(target.project, {
+      ...parsed,
+      title,
+      listId: parsed.listId || target.list.id,
+      assignees: parsed.assignees?.length ? parsed.assignees : target.project.defaultAssignees,
+      tagIds: parsed.tagIds?.length ? parsed.tagIds : target.project.defaultTags
+    });
+
+    created.push(result.data || result.stdout);
+  }
+
+  return {
+    project: target.project.name,
+    workspace: target.workspace.name,
+    workspaceId: target.project.workspaceId,
+    list: target.list.name,
+    result: {
+      createdCount: created.length,
+      created
+    }
   };
 }
 
@@ -261,13 +302,80 @@ export function parseHumanCommand(text, fallbackWorkspace) {
 
   function unsupportedFormatError(suggestion) {
     const base =
-      "Unsupported command format. Try 'create in DataCX - Active: Fix login bug' or 'search in 4ay-AI-CRM: onboarding'.";
+      "Unsupported command format. Try 'create in DataCX - Active: Fix login bug', 'bulk create in DataCX - Active: Task A | Task B', or 'search in 4ay-AI-CRM: onboarding'.";
 
     if (!suggestion) {
       throw new Error(base);
     }
 
     throw new Error(`${base} Did you mean: '${suggestion}'?`);
+  }
+
+  function parseBulkTitles(rawList) {
+    const raw = String(rawList || "").trim();
+    if (!raw) {
+      throw new Error(
+        "Bulk create needs at least one task. Example: 'bulk create in DataCX - Active: Task A | Task B | Task C'."
+      );
+    }
+
+    const lineItems = raw
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => item.replace(/^[-*]\s+/, "").replace(/^\d+[.)]\s+/, "").replace(/^\[\s?\]\s+/, "").trim())
+      .filter(Boolean);
+
+    const sourceItems =
+      lineItems.length > 1
+        ? lineItems
+        : raw
+            .split(/\s*\|\s*|\s*;\s*/)
+            .map((item) => item.trim())
+            .filter(Boolean);
+
+    const uniqueItems = [];
+    for (const item of sourceItems) {
+      if (!uniqueItems.includes(item)) {
+        uniqueItems.push(item);
+      }
+    }
+
+    if (!uniqueItems.length) {
+      throw new Error(
+        "I couldn't find any task titles in that bulk create command. Separate tasks with new lines, `|`, or `;`."
+      );
+    }
+
+    return uniqueItems;
+  }
+
+  const bulkCreateMatch = trimmed.match(/^(?:bulk\s+create|create\s+tasks?)(?:\s+in\s+(.+?))?\s*:\s*([\s\S]+)$/i);
+  if (bulkCreateMatch) {
+    if (!bulkCreateMatch[1] && !fallbackWorkspace) {
+      throw new Error(
+        "Please choose a workspace in the bulk create command. Example: 'bulk create in DataCX - Active: Task A | Task B'."
+      );
+    }
+
+    return {
+      action: "bulk_create",
+      payload: {
+        workspace: bulkCreateMatch[1]?.trim() || fallbackWorkspace,
+        titles: parseBulkTitles(bulkCreateMatch[2])
+      }
+    };
+  }
+
+  const naturalBulkCreateMatch = normalizedSpaces.match(/^(?:bulk\s+create|create\s+tasks?)\s+(.+?)\s+in\s+(.+)$/i);
+  if (naturalBulkCreateMatch) {
+    return {
+      action: "bulk_create",
+      payload: {
+        workspace: naturalBulkCreateMatch[2].trim(),
+        titles: parseBulkTitles(naturalBulkCreateMatch[1])
+      }
+    };
   }
 
   const createMatch = trimmed.match(/^create(?:\s+in\s+(.+?))?\s*:\s*(.+)$/i);
@@ -419,6 +527,8 @@ export async function dispatchParsedCommand(command) {
   switch (command.action) {
     case "create":
       return handleCreateTask(command.payload);
+    case "bulk_create":
+      return handleBulkCreateTask(command.payload);
     case "comment":
       return handleCommentTask(command.payload);
     case "move":
