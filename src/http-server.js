@@ -642,6 +642,18 @@ async function handleModalSubmission(payload) {
   const metadata = JSON.parse(payload.view?.private_metadata || "{}");
   const channelId = metadata.channelId;
   const userId = metadata.userId || payload.user?.id;
+  const postResult = async (result) => {
+    const message = slackResultText(result);
+
+    if (channelId) {
+      await postSlackMessage(channelId, message);
+      return;
+    }
+
+    if (userId) {
+      await postSlackEphemeral(channelId, userId, message);
+    }
+  };
 
   if (payload.view.callback_id === "blue_submit_comment_modal") {
     const text = getViewInputValue(payload.view, "comment_block", "comment_value").trim();
@@ -655,7 +667,7 @@ async function handleModalSubmission(payload) {
       }
     });
 
-    await postSlackEphemeral(channelId, userId, slackResultText(result));
+    await postResult(result);
     return;
   }
 
@@ -681,7 +693,7 @@ async function handleModalSubmission(payload) {
       }
     });
 
-    await postSlackEphemeral(channelId, userId, slackResultText(result));
+    await postResult(result);
     return;
   }
 
@@ -697,7 +709,7 @@ async function handleModalSubmission(payload) {
       }
     });
 
-    await postSlackEphemeral(channelId, userId, slackResultText(result));
+    await postResult(result);
     return;
   }
 
@@ -713,7 +725,7 @@ async function handleModalSubmission(payload) {
       }
     });
 
-    await postSlackEphemeral(channelId, userId, slackResultText(result));
+    await postResult(result);
   }
 }
 
