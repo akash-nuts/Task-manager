@@ -60,7 +60,10 @@ async function blueGraphql(query, variables = {}, options = {}) {
   });
 
   if (!response.ok) {
-    throw new Error(`Blue API request failed with status ${response.status}.`);
+    const responseText = await response.text().catch(() => "");
+    throw new Error(
+      `Blue API request failed with status ${response.status}${responseText ? `: ${responseText}` : ""}.`
+    );
   }
 
   const payload = await response.json();
@@ -643,42 +646,47 @@ export async function listRecords(project, filters = {}) {
 }
 
 export async function searchRecords(project, queryText, filters = {}) {
-  const query = `
-    query SearchRecords($query: String!, $companyId: String!) {
-      search(query: $query, companyId: $companyId) {
-        totalCount
-        hits {
-          _id
-          _source {
-            __typename
-            ... on Todo {
-              ${TODO_FIELDS}
+  try {
+    const query = `
+      query SearchRecords($query: String!, $companyId: String!) {
+        search(query: $query, companyId: $companyId) {
+          totalCount
+          hits {
+            _id
+            _source {
+              __typename
+              ... on Todo {
+                ${TODO_FIELDS}
+              }
             }
           }
         }
       }
+    `;
+
+    const data = await blueGraphql(query, {
+      query: queryText,
+      companyId: config.blueCompanyId
+    });
+
+    const apiResults = (data.search?.hits || [])
+      .map((hit) => hit?._source)
+      .filter((source) => source?.__typename === "Todo")
+      .map(normalizeTodo)
+      .filter((todo) => todo?.list?.workspaceId === project.workspaceId)
+      .filter((todo) => (filters.done === undefined ? true : todo.done === filters.done))
+      .filter((todo) =>
+        !filters.assignee ? true : todo.assignees.some((assignee) => assignee.id === filters.assignee)
+      );
+
+    if (apiResults.length > 0) {
+      return {
+        data: filters.limit ? apiResults.slice(0, filters.limit) : apiResults
+      };
     }
-  `;
-
-  const data = await blueGraphql(query, {
-    query: queryText,
-    companyId: config.blueCompanyId
-  });
-
-  const apiResults = (data.search?.hits || [])
-    .map((hit) => hit?._source)
-    .filter((source) => source?.__typename === "Todo")
-    .map(normalizeTodo)
-    .filter((todo) => todo?.list?.workspaceId === project.workspaceId)
-    .filter((todo) => (filters.done === undefined ? true : todo.done === filters.done))
-    .filter((todo) =>
-      !filters.assignee ? true : todo.assignees.some((assignee) => assignee.id === filters.assignee)
-    );
-
-  if (apiResults.length > 0) {
-    return {
-      data: filters.limit ? apiResults.slice(0, filters.limit) : apiResults
-    };
+  } catch (_error) {
+    // Blue's global search can return 400s for some workspaces/accounts. We fall back to
+    // scanning the workspace task list directly so Slack search still works reliably.
   }
 
   const listResult = await listRecords(project, {
