@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   createComment,
   createRecord,
+  getRecord,
   listLists,
   listRecords,
   listWorkspaces,
@@ -41,7 +42,8 @@ const bulkCreateTaskSchema = z.object({
 const updateTaskSchema = z.object({
   project: z.string().optional(),
   workspace: z.string().optional(),
-  recordId: z.string().min(1),
+  recordId: z.string().min(1).optional(),
+  taskQuery: z.string().min(1).optional(),
   title: z.string().optional(),
   description: z.string().optional(),
   assignees: z.array(z.string()).optional(),
@@ -52,7 +54,8 @@ const updateTaskSchema = z.object({
 const moveTaskSchema = z.object({
   project: z.string().optional(),
   workspace: z.string().optional(),
-  recordId: z.string().min(1),
+  recordId: z.string().min(1).optional(),
+  taskQuery: z.string().min(1).optional(),
   list: z.string().optional(),
   listId: z.string().optional()
 });
@@ -60,7 +63,8 @@ const moveTaskSchema = z.object({
 const commentTaskSchema = z.object({
   project: z.string().optional(),
   workspace: z.string().optional(),
-  recordId: z.string().min(1),
+  recordId: z.string().min(1).optional(),
+  taskQuery: z.string().min(1).optional(),
   text: z.string().min(1)
 });
 
@@ -72,33 +76,104 @@ const searchTaskSchema = z.object({
   limit: z.number().int().positive().max(100).optional()
 });
 
+const statusTaskSchema = z.object({
+  project: z.string().optional(),
+  workspace: z.string().optional(),
+  recordId: z.string().min(1).optional(),
+  taskQuery: z.string().min(1).optional()
+});
+
+const listTaskSchema = z.object({
+  project: z.string().optional(),
+  workspace: z.string().optional(),
+  list: z.string().optional(),
+  done: z.boolean().optional(),
+  assignee: z.string().optional(),
+  limit: z.number().int().positive().max(100).optional()
+});
+
 export function getSlackHelpText() {
   return [
     "Here are the commands I support:",
     "",
     "1. Create a task",
-    "/blue create a task in DataCX - Active | Login breaks on Safari after Google sign-in | Akash H",
+    "/blue create a task in DataCX - Active | Checkout button overlaps footer on mobile Safari | Akash H",
     "",
     "2. Create a task with explicit title, description, and assignee",
-    "/blue create in DataCX - Active: Login bug | desc: User gets redirected back to login on Safari | assignee: Akash H",
+    "/blue create in DataCX - Active: Checkout footer bug | desc: Checkout button overlaps footer on mobile Safari | assignee: Akash H",
     "",
     "3. Bulk create tasks",
-    "/blue bulk create in DataCX - Active: desc: Q3 launch tasks | assignee: Akash H | Fix login timeout ; Add QA checklist ; Review handoff",
+    "/blue bulk create in DataCX - Active: desc: Sprint intake | assignee: Akash H | Fix login ; Add QA checklist ; Review handoff",
     "",
     "4. Search tasks",
-    "/blue search in DataCX - Active: onboarding",
+    "/blue search in DataCX - Active: checkout",
     "",
-    "5. Move a task",
-    "/blue move <taskId> to In Progress",
+    "5. List tasks",
+    "/blue list tasks in DataCX - Active",
+    "/blue list tasks in DataCX - Active: In Progress",
     "",
-    "6. Comment on a task",
-    "/blue comment <taskId>: Please prioritize this",
+    "6. Check task status",
+    "/blue status in DataCX - Active: checkout footer",
+    "",
+    "7. Update a task",
+    "/blue update in DataCX - Active: checkout footer | desc: Repro on iPhone 14 Safari | assignee: Akash H",
+    "",
+    "8. Move a task",
+    "/blue move in DataCX - Active: checkout footer | QA",
+    "",
+    "9. Comment on a task",
+    "/blue comment in DataCX - Active: checkout footer | Please verify on iPhone 14",
     "",
     "Tips:",
     "- For the short create format, the structure is: workspace | full description | assignee",
     "- I will generate a shorter title automatically from the description",
-    "- If the workspace name is unclear, I will suggest matching workspaces"
+    "- If a workspace or task name is unclear, I will suggest matches in Slack",
+    "- Help and errors stay private, while successful create or update actions can post to the channel"
   ].join("\n");
+}
+
+function normalizeLookupValue(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+async function resolveExistingTaskContext(input = {}) {
+  if (!input.recordId) {
+    throw new Error("Task ID is required.");
+  }
+
+  const recordResult = await getRecord(input.recordId);
+  const record = recordResult.data;
+
+  if (!record?.list?.workspaceId) {
+    throw new Error(`Task '${input.recordId}' is missing workspace details in Blue.`);
+  }
+
+  const list = record.list?.id
+    ? {
+        id: record.list.id,
+        name: record.list.name
+      }
+    : null;
+
+  return {
+    project: {
+      name: record.list.workspace || input.workspace || "Blue",
+      company: config.blueDefaultCompany,
+      workspaceId: record.list.workspaceId,
+      listId: list?.id || null,
+      defaultAssignees: [],
+      defaultTags: []
+    },
+    workspace: {
+      id: record.list.workspaceId,
+      name: record.list.workspace || input.workspace || "Blue"
+    },
+    list,
+    record
+  };
 }
 
 async function resolveTargetContext(input = {}) {
@@ -130,6 +205,14 @@ async function resolveTargetContext(input = {}) {
     };
   }
 
+  if (!input.workspace && input.recordId) {
+    const existing = await resolveExistingTaskContext(input);
+    if (input.listId || input.list) {
+      existing.list = await resolveList(existing.project.workspaceId, input.listId || input.list, existing.project);
+    }
+    return existing;
+  }
+
   const workspaceRef = input.workspace || input.project;
   if (!workspaceRef) {
     const result = await listWorkspaces();
@@ -149,7 +232,10 @@ async function resolveTargetContext(input = {}) {
     defaultAssignees: [],
     defaultTags: []
   };
-  const list = await resolveList(workspace.id, input.listId || input.list || null, project);
+  const list =
+    input.listId || input.list || input.recordId
+      ? await resolveList(workspace.id, input.listId || input.list || null, project)
+      : null;
 
   return { project, workspace, list };
 }
@@ -166,19 +252,21 @@ async function resolveCreateDefaults(target, parsed) {
 export async function handleCreateTask(input) {
   const parsed = createTaskSchema.parse(input);
   const target = await resolveTargetContext(parsed);
+  const list = target.list || (await resolveList(target.project.workspaceId, null, target.project));
   const resolved = await resolveCreateDefaults(target, parsed);
   const result = await createRecord(target.project, {
     ...parsed,
-    listId: parsed.listId || target.list.id,
+    listId: parsed.listId || list.id,
     assignees: resolved.assigneeIds,
     tagIds: parsed.tagIds?.length ? parsed.tagIds : target.project.defaultTags
   });
 
   return {
+    action: "create",
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
-    list: target.list.name,
+    list: list.name,
     result: result.data || result.stdout
   };
 }
@@ -186,6 +274,7 @@ export async function handleCreateTask(input) {
 export async function handleBulkCreateTask(input) {
   const parsed = bulkCreateTaskSchema.parse(input);
   const target = await resolveTargetContext(parsed);
+  const list = target.list || (await resolveList(target.project.workspaceId, null, target.project));
   const resolved = await resolveCreateDefaults(target, parsed);
   const titles = parsed.titles.map((title) => title.trim()).filter(Boolean);
   const created = [];
@@ -194,7 +283,7 @@ export async function handleBulkCreateTask(input) {
     const result = await createRecord(target.project, {
       ...parsed,
       title,
-      listId: parsed.listId || target.list.id,
+      listId: parsed.listId || list.id,
       assignees: resolved.assigneeIds,
       tagIds: parsed.tagIds?.length ? parsed.tagIds : target.project.defaultTags
     });
@@ -203,10 +292,11 @@ export async function handleBulkCreateTask(input) {
   }
 
   return {
+    action: "bulk_create",
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
-    list: target.list.name,
+    list: list.name,
     result: {
       createdCount: created.length,
       created
@@ -216,10 +306,21 @@ export async function handleBulkCreateTask(input) {
 
 export async function handleUpdateTask(input) {
   const parsed = updateTaskSchema.parse(input);
+  if (!parsed.recordId) {
+    throw new Error("Please select a task first before updating it.");
+  }
+
   const target = await resolveTargetContext(parsed);
-  const result = await updateRecord(target.project, parsed);
+  const assigneeIds = parsed.assignees?.length
+    ? (await resolveAssignees(target.project.workspaceId, parsed.assignees)).map((user) => user.id)
+    : undefined;
+  const result = await updateRecord(target.project, {
+    ...parsed,
+    assignees: assigneeIds
+  });
 
   return {
+    action: "update",
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
@@ -229,32 +330,44 @@ export async function handleUpdateTask(input) {
 
 export async function handleMoveTask(input) {
   const parsed = moveTaskSchema.parse(input);
+  if (!parsed.recordId) {
+    throw new Error("Please select a task first before moving it.");
+  }
+
   const target = await resolveTargetContext(parsed);
-  const listId = parsed.listId || target.list.id;
+  const list = target.list || (await resolveList(target.project.workspaceId, parsed.listId || parsed.list, target.project));
   const result = await moveRecord(target.project, {
     ...parsed,
-    listId
+    listId: parsed.listId || list.id
   });
 
   return {
+    action: "move",
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
-    list: target.list.name,
+    list: list.name,
     result: result.data || result.stdout
   };
 }
 
 export async function handleCommentTask(input) {
   const parsed = commentTaskSchema.parse(input);
+  if (!parsed.recordId) {
+    throw new Error("Please select a task first before commenting on it.");
+  }
+
   const target = await resolveTargetContext(parsed);
   const result = await createComment(target.project, parsed);
 
   return {
+    action: "comment",
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
-    result: result.data || result.stdout
+    recordId: parsed.recordId,
+    comment: result.data || result.stdout,
+    result: target.record || (await getRecord(parsed.recordId)).data
   };
 }
 
@@ -263,35 +376,67 @@ export async function handleSearchTasks(input) {
   const target = await resolveTargetContext(parsed);
   const result = await searchRecords(target.project, parsed.query, {
     done: parsed.done,
-    limit: parsed.limit
+    limit: parsed.limit || 5
   });
 
   return {
+    action: "search",
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
+    query: parsed.query,
     result: result.data || result.stdout
   };
 }
 
-export async function handleListTasks(input = {}) {
-  const target = await resolveTargetContext(input);
-  const result = await listRecords(target.project, {
-    done: input.done,
-    assignee: input.assignee
-  });
+export async function handleStatusTask(input) {
+  const parsed = statusTaskSchema.parse(input);
+  if (!parsed.recordId) {
+    throw new Error("Please select a task first before checking its status.");
+  }
+
+  const record = (await getRecord(parsed.recordId)).data;
 
   return {
+    action: "status",
+    project: record.list?.workspace || parsed.workspace || "Blue",
+    workspace: record.list?.workspace || parsed.workspace || "Blue",
+    workspaceId: record.list?.workspaceId || "",
+    result: record
+  };
+}
+
+export async function handleListTasks(input = {}) {
+  const parsed = listTaskSchema.parse(input);
+  const target = await resolveTargetContext(parsed);
+  const result = await listRecords(target.project, {
+    done: parsed.done,
+    assignee: parsed.assignee
+  });
+
+  let tasks = Array.isArray(result.data) ? result.data : [];
+
+  if (parsed.list) {
+    const normalizedList = normalizeLookupValue(parsed.list);
+    tasks = tasks.filter((task) => normalizeLookupValue(task.list?.name) === normalizedList);
+  }
+
+  const limit = parsed.limit || 20;
+
+  return {
+    action: "list",
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
-    result: result.data || result.stdout
+    list: parsed.list || null,
+    result: tasks.slice(0, limit)
   };
 }
 
 export async function handleListWorkspaces() {
   const result = await listWorkspaces();
   return {
+    action: "list_workspaces",
     company: config.blueDefaultCompany,
     result: result.data || result.stdout
   };
@@ -324,6 +469,7 @@ export async function handleListWorkspaceLists(input) {
 
   const result = await listLists(project.workspaceId, project);
   return {
+    action: "list_lists",
     workspace: workspace.name,
     workspaceId: project.workspaceId,
     result: result.data || result.stdout
@@ -332,6 +478,7 @@ export async function handleListWorkspaceLists(input) {
 
 export async function handleHelp() {
   return {
+    action: "help",
     result: getSlackHelpText()
   };
 }
@@ -351,13 +498,9 @@ export function parseHumanCommand(text, fallbackWorkspace) {
 
   const normalizedSpaces = trimmed.replace(/\s+/g, " ").trim();
 
-  function workspaceSuggestion(workspace, actionText) {
-    return `${actionText} in ${workspace}: `;
-  }
-
   function unsupportedFormatError(suggestion) {
     const base =
-      "Unsupported command format. Try 'create a task in DataCX - Active | Fix login timeout on Safari login page | Akash H', 'create in DataCX - Active: Fix login bug | desc: ... | assignee: Akash H', 'bulk create in DataCX - Active: desc: ... | assignee: Akash H | Task A ; Task B', or 'search in 4ay-AI-CRM: onboarding'.";
+      "Unsupported command format. Try help, create, bulk create, search, list tasks, status, update, move, or comment. Example: '/blue help'.";
 
     if (!suggestion) {
       throw new Error(base);
@@ -406,7 +549,9 @@ export function parseHumanCommand(text, fallbackWorkspace) {
   }
 
   function parseMetadataToken(token) {
-    const match = String(token || "").trim().match(/^(desc|description|assignee|assignees)\s*:\s*(.+)$/i);
+    const match = String(token || "")
+      .trim()
+      .match(/^(title|desc|description|assignee|assignees)\s*:\s*(.+)$/i);
     if (!match) {
       return null;
     }
@@ -415,6 +560,10 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     const value = match[2].trim();
     if (!value) {
       return null;
+    }
+
+    if (key === "title") {
+      return { key: "title", value };
     }
 
     if (key === "desc" || key === "description") {
@@ -449,7 +598,7 @@ export function parseHumanCommand(text, fallbackWorkspace) {
       metadata[parsedToken.key] = parsedToken.value;
     }
 
-    const title = titleParts.join(" | ").trim();
+    const title = (metadata.title || titleParts.join(" | ")).trim();
     if (!title) {
       throw new Error(
         "Create needs a task title. Example: 'create in DataCX - Active: Fix login timeout | desc: Session expires after 5 min | assignee: Akash H'."
@@ -548,6 +697,31 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
+  function parseUpdateSegments(rawBody) {
+    const segments = String(rawBody || "")
+      .split("|")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    const payload = {};
+    for (const segment of segments) {
+      const parsedToken = parseMetadataToken(segment);
+      if (!parsedToken) {
+        continue;
+      }
+
+      payload[parsedToken.key] = parsedToken.value;
+    }
+
+    if (!payload.title && !payload.description && !payload.assignees?.length) {
+      throw new Error(
+        "Update needs at least one field. Example: 'update in DataCX - Active: checkout footer | desc: Repro on iPhone Safari | assignee: Akash H'."
+      );
+    }
+
+    return payload;
+  }
+
   function validateCreateRequirements(payload, { bulk = false } = {}) {
     if (!payload.description) {
       throw new Error(
@@ -585,19 +759,6 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
-  const naturalBulkCreateMatch = normalizedSpaces.match(/^(?:bulk\s+create|create\s+tasks?)\s+(.+?)\s+in\s+(.+)$/i);
-  if (naturalBulkCreateMatch) {
-    const parsedBody = parseBulkBody(naturalBulkCreateMatch[1]);
-    validateCreateRequirements(parsedBody, { bulk: true });
-    return {
-      action: "bulk_create",
-      payload: {
-        workspace: naturalBulkCreateMatch[2].trim(),
-        ...parsedBody
-      }
-    };
-  }
-
   const simpleCreateMatch = trimmed.match(/^create\s+(?:a\s+)?task\s+in\s+(.+?)\s*\|\s*([\s\S]+)$/i);
   if (simpleCreateMatch) {
     const parsedBody = parseSimpleCreateSegments(simpleCreateMatch[2]);
@@ -629,88 +790,18 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
-  const naturalCreateMatch = normalizedSpaces.match(/^create\s+(.+?)\s+in\s+(.+)$/i);
-  if (naturalCreateMatch) {
-    const parsedBody = parseCreateBody(naturalCreateMatch[1]);
-    validateCreateRequirements(parsedBody);
-    return {
-      action: "create",
-      payload: {
-        workspace: naturalCreateMatch[2].trim(),
-        ...parsedBody
-      }
-    };
-  }
-
-  const createMissingColonMatch = normalizedSpaces.match(/^create\s+in\s+(.+?)\s+(.+)$/i);
-  if (createMissingColonMatch) {
-    const parsedBody = parseCreateBody(createMissingColonMatch[2]);
-    validateCreateRequirements(parsedBody);
-    return {
-      action: "create",
-      payload: {
-        workspace: createMissingColonMatch[1].trim(),
-        ...parsedBody
-      }
-    };
-  }
-
-  const commentMatch = trimmed.match(/^comment\s+(\S+)\s*:\s*(.+)$/i);
-  if (commentMatch) {
-    if (!fallbackWorkspace) {
-      throw new Error(
-        "Please include a workspace before commenting, for example: 'comment in DataCX - Active 12345: Please prioritize this'."
-      );
+  const listMatch = trimmed.match(/^list\s+tasks?(?:\s+in\s+(.+?))?(?:\s*:\s*(.+))?$/i);
+  if (listMatch) {
+    const workspace = listMatch[1]?.trim() || fallbackWorkspace;
+    if (!workspace) {
+      throw new Error("Please choose a workspace. Example: 'list tasks in DataCX - Active'.");
     }
 
     return {
-      action: "comment",
+      action: "list",
       payload: {
-        workspace: fallbackWorkspace,
-        recordId: commentMatch[1],
-        text: commentMatch[2].trim()
-      }
-    };
-  }
-
-  const naturalCommentMatch = normalizedSpaces.match(/^comment\s+on\s+(\S+)\s+(.+)$/i);
-  if (naturalCommentMatch) {
-    return {
-      action: "comment",
-      payload: {
-        workspace: fallbackWorkspace,
-        recordId: naturalCommentMatch[1],
-        text: naturalCommentMatch[2].trim()
-      }
-    };
-  }
-
-  const moveMatch = trimmed.match(/^move\s+(\S+)\s+to\s+(.+)$/i);
-  if (moveMatch) {
-    if (!fallbackWorkspace) {
-      throw new Error(
-        "Please include the workspace in the request before moving a task."
-      );
-    }
-
-    return {
-      action: "move",
-      payload: {
-        workspace: fallbackWorkspace,
-        recordId: moveMatch[1],
-        list: moveMatch[2].trim()
-      }
-    };
-  }
-
-  const naturalMoveMatch = normalizedSpaces.match(/^move\s+task\s+(\S+)\s+to\s+(.+)$/i);
-  if (naturalMoveMatch) {
-    return {
-      action: "move",
-      payload: {
-        workspace: fallbackWorkspace,
-        recordId: naturalMoveMatch[1],
-        list: naturalMoveMatch[2].trim()
+        workspace,
+        list: listMatch[2]?.trim() || undefined
       }
     };
   }
@@ -732,25 +823,114 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
-  const naturalSearchMatch = normalizedSpaces.match(/^search\s+(.+?)\s+in\s+(.+)$/i);
-  if (naturalSearchMatch) {
+  const statusByIdMatch = trimmed.match(/^status\s+(\S+)$/i);
+  if (statusByIdMatch) {
     return {
-      action: "search",
+      action: "status",
       payload: {
-        workspace: naturalSearchMatch[2].trim(),
-        query: naturalSearchMatch[1].trim()
+        recordId: statusByIdMatch[1]
       }
     };
   }
 
-  const createWorkspaceGuess = normalizedSpaces.match(/^create\s+(.+)$/i);
-  if (createWorkspaceGuess && fallbackWorkspace) {
-    unsupportedFormatError(`${workspaceSuggestion(fallbackWorkspace, "create")}${createWorkspaceGuess[1].trim()}`);
+  const statusByQueryMatch = trimmed.match(/^status(?:\s+in\s+(.+?))?\s*:\s*(.+)$/i);
+  if (statusByQueryMatch) {
+    const workspace = statusByQueryMatch[1]?.trim() || fallbackWorkspace;
+    if (!workspace) {
+      throw new Error("Please choose a workspace. Example: 'status in DataCX - Active: checkout'.");
+    }
+
+    return {
+      action: "status",
+      payload: {
+        workspace,
+        taskQuery: statusByQueryMatch[2].trim()
+      }
+    };
   }
 
-  const searchWorkspaceGuess = normalizedSpaces.match(/^search\s+(.+)$/i);
-  if (searchWorkspaceGuess && fallbackWorkspace) {
-    unsupportedFormatError(`${workspaceSuggestion(fallbackWorkspace, "search")}${searchWorkspaceGuess[1].trim()}`);
+  const updateByIdMatch = trimmed.match(/^update\s+(\S+)\s*\|\s*(.+)$/i);
+  if (updateByIdMatch) {
+    return {
+      action: "update",
+      payload: {
+        recordId: updateByIdMatch[1],
+        ...parseUpdateSegments(updateByIdMatch[2])
+      }
+    };
+  }
+
+  const updateByQueryMatch = trimmed.match(/^update(?:\s+in\s+(.+?))?\s*:\s*(.+?)\s*\|\s*(.+)$/i);
+  if (updateByQueryMatch) {
+    const workspace = updateByQueryMatch[1]?.trim() || fallbackWorkspace;
+    if (!workspace) {
+      throw new Error("Please choose a workspace. Example: 'update in DataCX - Active: checkout | desc: ...'.");
+    }
+
+    return {
+      action: "update",
+      payload: {
+        workspace,
+        taskQuery: updateByQueryMatch[2].trim(),
+        ...parseUpdateSegments(updateByQueryMatch[3])
+      }
+    };
+  }
+
+  const commentByQueryMatch = trimmed.match(/^comment(?:\s+in\s+(.+?))?\s*:\s*(.+?)\s*\|\s*(.+)$/i);
+  if (commentByQueryMatch) {
+    const workspace = commentByQueryMatch[1]?.trim() || fallbackWorkspace;
+    if (!workspace) {
+      throw new Error("Please choose a workspace. Example: 'comment in DataCX - Active: checkout | Please verify'.");
+    }
+
+    return {
+      action: "comment",
+      payload: {
+        workspace,
+        taskQuery: commentByQueryMatch[2].trim(),
+        text: commentByQueryMatch[3].trim()
+      }
+    };
+  }
+
+  const commentByIdMatch = trimmed.match(/^comment\s+(\S+)\s*:\s*(.+)$/i);
+  if (commentByIdMatch) {
+    return {
+      action: "comment",
+      payload: {
+        recordId: commentByIdMatch[1],
+        text: commentByIdMatch[2].trim()
+      }
+    };
+  }
+
+  const moveByIdMatch = trimmed.match(/^move\s+(\S+)\s+to\s+(.+)$/i);
+  if (moveByIdMatch) {
+    return {
+      action: "move",
+      payload: {
+        recordId: moveByIdMatch[1],
+        list: moveByIdMatch[2].trim()
+      }
+    };
+  }
+
+  const moveByQueryMatch = trimmed.match(/^move(?:\s+in\s+(.+?))?\s*:\s*(.+?)\s*\|\s*(.+)$/i);
+  if (moveByQueryMatch) {
+    const workspace = moveByQueryMatch[1]?.trim() || fallbackWorkspace;
+    if (!workspace) {
+      throw new Error("Please choose a workspace. Example: 'move in DataCX - Active: checkout | QA'.");
+    }
+
+    return {
+      action: "move",
+      payload: {
+        workspace,
+        taskQuery: moveByQueryMatch[2].trim(),
+        list: moveByQueryMatch[3].trim()
+      }
+    };
   }
 
   unsupportedFormatError(null);
@@ -775,6 +955,12 @@ export async function dispatchParsedCommand(command) {
       return handleMoveTask(command.payload);
     case "search":
       return handleSearchTasks(command.payload);
+    case "status":
+      return handleStatusTask(command.payload);
+    case "update":
+      return handleUpdateTask(command.payload);
+    case "list":
+      return handleListTasks(command.payload);
     default:
       throw new Error(`Unsupported action '${command.action}'.`);
   }

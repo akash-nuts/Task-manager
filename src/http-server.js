@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import express from "express";
 import { config } from "./config.js";
-import { findWorkspaceMatches } from "./blue-api.js";
+import { findWorkspaceMatches, searchRecords } from "./blue-api.js";
 import { dispatchHumanCommand, dispatchParsedCommand, parseHumanCommand } from "./task-router.js";
 
 const app = express();
@@ -21,14 +21,6 @@ app.get("/routes", (_req, res) => {
     }
   });
 });
-
-function safeJsonParse(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
 
 function verifySlackSignature(req) {
   if (!config.slackSigningSecret) {
@@ -60,47 +52,11 @@ function verifySlackSignature(req) {
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(computed));
 }
 
-function slackResultText(result) {
-  const workspace = result.workspace || result.project || "Blue";
-  const list = result.list ? ` in ${result.list}` : "";
-
-  if (!result?.result || typeof result.result === "string") {
-    return `Completed in ${workspace}${list}.\n${result.result || ""}`.trim();
-  }
-
-  if (typeof result.result === "object" && Number.isInteger(result.result.createdCount)) {
-    const items = result.result.created || [];
-    const lines = [`Created ${result.result.createdCount} tasks successfully in ${workspace}${list}.`];
-
-    items.forEach((task, index) => {
-      const link = buildBlueTaskUrl(task);
-      const assignees = formatAssignees(task.assignees);
-      const description = task.description ? ` Description: ${task.description}` : "";
-      lines.push(
-        `${index + 1}. ${task.title}${assignees ? ` | Assignee: ${assignees}` : ""}${description}${
-          link ? ` | Link: ${link}` : ""
-        }`
-      );
-    });
-
-    return lines.join("\n");
-  }
-
-  if (typeof result.result === "object" && result.result.title) {
-    const link = buildBlueTaskUrl(result.result);
-    const assignees = formatAssignees(result.result.assignees);
-    const description = result.result.description ? ` Description: ${result.result.description}` : "";
-    return [
-      `Created task "${result.result.title}" successfully in ${workspace}${list}.`,
-      assignees ? `Assignee: ${assignees}.` : null,
-      description ? description.trim() : null,
-      link ? `Link: ${link}` : null
-    ]
-      .filter(Boolean)
-      .join("\n");
-  }
-
-  return `Completed in ${workspace}${list}.\n${JSON.stringify(result.result, null, 2)}`;
+function normalizeLookupValue(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function formatAssignees(assignees = []) {
@@ -144,15 +100,118 @@ function fromSlackJson(value) {
   return JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8"));
 }
 
+function isPublicSuccessAction(action) {
+  return ["create", "bulk_create", "update", "move", "comment"].includes(action);
+}
+
+function taskSummaryLine(task, index) {
+  const link = buildBlueTaskUrl(task);
+  const assignees = formatAssignees(task.assignees);
+
+  return `${index + 1}. ${task.title} | List: ${task.list?.name || "Unknown"}${
+    assignees ? ` | Assignee: ${assignees}` : ""
+  }${link ? ` | Link: ${link}` : ""}`;
+}
+
+function slackResultText(result) {
+  const workspace = result.workspace || result.project || "Blue";
+  const list = result.list ? ` in ${result.list}` : "";
+
+  if (result.action === "help") {
+    return String(result.result || "");
+  }
+
+  if (result.action === "bulk_create") {
+    const items = result.result?.created || [];
+    const lines = [`Created ${result.result.createdCount} tasks successfully in ${workspace}${list}.`];
+    items.forEach((task, index) => lines.push(taskSummaryLine(task, index)));
+    return lines.join("\n");
+  }
+
+  if (["create", "update", "move"].includes(result.action) && result.result?.title) {
+    const link = buildBlueTaskUrl(result.result);
+    const assignees = formatAssignees(result.result.assignees);
+    const actionLabel =
+      result.action === "create"
+        ? "Created"
+        : result.action === "update"
+          ? "Updated"
+          : "Moved";
+
+    return [
+      `${actionLabel} task "${result.result.title}" successfully in ${workspace}${result.result.list?.name ? ` (${result.result.list.name})` : list}.`,
+      assignees ? `Assignee: ${assignees}.` : null,
+      result.result.description ? `Description: ${result.result.description}` : null,
+      link ? `Link: ${link}` : null
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  if (result.action === "comment" && result.result?.title) {
+    const link = buildBlueTaskUrl(result.result);
+    return [
+      `Added a comment to "${result.result.title}" in ${workspace}.`,
+      link ? `Link: ${link}` : null
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  if (result.action === "status" && result.result?.title) {
+    const task = result.result;
+    const link = buildBlueTaskUrl(task);
+    const assignees = formatAssignees(task.assignees);
+    return [
+      `"${task.title}" is currently in ${task.list?.name || "Unknown"} in ${workspace}.`,
+      assignees ? `Assignee: ${assignees}.` : null,
+      task.done ? "Status: Done." : "Status: Open.",
+      link ? `Link: ${link}` : null
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  if (["search", "list"].includes(result.action) && Array.isArray(result.result)) {
+    if (!result.result.length) {
+      return result.action === "search"
+        ? `No matching tasks found in ${workspace}.`
+        : `No tasks found in ${workspace}${list}.`;
+    }
+
+    const header =
+      result.action === "search"
+        ? `Top matching tasks in ${workspace} for "${result.query}":`
+        : `Tasks in ${workspace}${list}:`;
+    return [header, ...result.result.map((task, index) => taskSummaryLine(task, index))].join("\n");
+  }
+
+  if (!result?.result || typeof result.result === "string") {
+    return `Completed in ${workspace}${list}.\n${result.result || ""}`.trim();
+  }
+
+  return `Completed in ${workspace}${list}.\n${JSON.stringify(result.result, null, 2)}`;
+}
+
 function buildWorkspaceSelectionResponse(command, candidates, { noGoodMatch = false } = {}) {
   const subject =
     command.action === "create"
       ? `create "${command.payload.title}"`
       : command.action === "bulk_create"
         ? `create ${command.payload.titles.length} tasks`
-      : command.action === "search"
-        ? `search for "${command.payload.query}"`
-        : "continue";
+        : command.action === "search"
+          ? `search for "${command.payload.query}"`
+          : command.action === "list"
+            ? "list tasks"
+            : command.action === "status"
+              ? `find "${command.payload.taskQuery}"`
+              : command.action === "update"
+                ? `update "${command.payload.taskQuery}"`
+                : command.action === "move"
+                  ? `move "${command.payload.taskQuery}"`
+                  : command.action === "comment"
+                    ? `comment on "${command.payload.taskQuery}"`
+                    : "continue";
   const intro = noGoodMatch
     ? `I couldn't find an exact Blue workspace for "${command.payload.workspace}". Which workspace should I use to ${subject}?`
     : `I found a few possible workspaces for "${command.payload.workspace}". Which one should I use to ${subject}?`;
@@ -202,120 +261,254 @@ function buildWorkspaceSelectionResponse(command, candidates, { noGoodMatch = fa
   };
 }
 
-async function postSlackMessage(channel, text, threadTs) {
+function buildTaskSelectionResponse(command, tasks) {
+  const workspace = command.payload.workspace;
+  const intro = `I found a few matching tasks in ${workspace}. Which one should I use?`;
+
+  return {
+    response_type: "ephemeral",
+    text: intro,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: intro
+        }
+      },
+      {
+        type: "actions",
+        elements: tasks.slice(0, 5).map((task) => ({
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: `${task.title.slice(0, 50)}${task.title.length > 50 ? "..." : ""}`
+          },
+          action_id: "blue_select_task",
+          value: toSlackJson({
+            action: command.action,
+            payload: {
+              ...command.payload,
+              recordId: task.id
+            }
+          })
+        }))
+      },
+      {
+        type: "context",
+        elements: tasks.slice(0, 5).map((task, index) => ({
+          type: "mrkdwn",
+          text: `${index + 1}. ${task.title} | ${task.list?.name || "Unknown"}`
+        }))
+      }
+    ]
+  };
+}
+
+async function postSlackApi(method, payload) {
   if (!config.slackBotToken) {
-    return;
+    return null;
   }
 
-  const response = await fetch("https://slack.com/api/chat.postMessage", {
+  const response = await fetch(`https://slack.com/api/${method}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${config.slackBotToken}`,
       "Content-Type": "application/json; charset=utf-8"
     },
-    body: JSON.stringify({
-      channel,
-      text,
-      thread_ts: threadTs || undefined
-    })
+    body: JSON.stringify(payload)
   });
 
-  const payload = await response.json();
-  if (!payload.ok) {
-    throw new Error(`Slack chat.postMessage failed: ${payload.error || "unknown_error"}`);
+  const data = await response.json();
+  if (!data.ok) {
+    throw new Error(`Slack ${method} failed: ${data.error || "unknown_error"}`);
   }
+
+  return data;
 }
 
-async function postSlackResponse(responseUrl, text) {
-  if (!responseUrl) {
-    return;
-  }
-
-  await fetch(responseUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json; charset=utf-8"
-    },
-    body: JSON.stringify({
-      response_type: "ephemeral",
-      text
-    })
+async function postSlackMessage(channel, text, threadTs) {
+  return postSlackApi("chat.postMessage", {
+    channel,
+    text,
+    thread_ts: threadTs || undefined
   });
 }
 
-async function processSlackCommand({ text, fallbackWorkspace, channel, threadTs, responseUrl }) {
-  try {
-    const result = await dispatchHumanCommand(text, fallbackWorkspace);
-    const message = slackResultText(result);
+async function postSlackEphemeral(channel, user, text, blocks) {
+  return postSlackApi("chat.postEphemeral", {
+    channel,
+    user,
+    text,
+    blocks: blocks || undefined
+  });
+}
 
-    if (responseUrl) {
-      await postSlackResponse(responseUrl, message);
-    } else if (channel) {
-      await postSlackMessage(channel, message, threadTs);
-    }
-
-    return { ok: true, result };
-  } catch (error) {
-    const message = `Blue command failed: ${error.message}`;
-
-    if (responseUrl) {
-      await postSlackResponse(responseUrl, message);
-    } else if (channel && config.slackBotToken) {
-      await postSlackMessage(channel, message, threadTs);
-    }
-
-    return { ok: false, error: error.message };
+function createTaskSearchQuery(command) {
+  if (command.action === "status") {
+    return command.payload.taskQuery;
   }
+
+  if (command.action === "update" || command.action === "move" || command.action === "comment") {
+    return command.payload.taskQuery;
+  }
+
+  return "";
+}
+
+async function maybeResolveWorkspace(command) {
+  const workspaceRef = command.payload?.workspace;
+  const workspaceActions = ["create", "bulk_create", "search", "list", "status", "update", "move", "comment"];
+
+  if (!workspaceActions.includes(command.action) || !workspaceRef) {
+    return null;
+  }
+
+  const candidates = await findWorkspaceMatches(workspaceRef, {
+    limit: 5,
+    includeArchived: true
+  });
+
+  if (!candidates.length) {
+    const allWorkspaces = await findWorkspaceMatches("", { limit: 5, includeArchived: true });
+    return {
+      type: "selection",
+      payload: buildWorkspaceSelectionResponse(command, allWorkspaces, { noGoodMatch: true })
+    };
+  }
+
+  const [best, second] = candidates;
+  const strongMatch = best.score >= 0.9;
+  const clearWinner = !second || best.score - second.score >= 0.08;
+
+  if (!(strongMatch && clearWinner)) {
+    return {
+      type: "selection",
+      payload: buildWorkspaceSelectionResponse(command, candidates, { noGoodMatch: best.score < 0.9 })
+    };
+  }
+
+  command.payload.workspace = best.name;
+  command.payload.workspaceId = best.id;
+  return null;
+}
+
+async function maybeResolveTask(command) {
+  const taskLookupActions = ["status", "update", "move", "comment"];
+  if (!taskLookupActions.includes(command.action)) {
+    return null;
+  }
+
+  if (command.payload.recordId || !command.payload.taskQuery || !command.payload.workspace) {
+    return null;
+  }
+
+  const project = {
+    name: command.payload.workspace,
+    workspaceId: command.payload.workspaceId,
+    defaultTags: [],
+    defaultAssignees: []
+  };
+  const tasks = (await searchRecords(project, createTaskSearchQuery(command), { limit: 5 })).data || [];
+
+  if (!tasks.length) {
+    throw new Error(
+      `I couldn't find any matching task in ${command.payload.workspace} for "${command.payload.taskQuery}".`
+    );
+  }
+
+  const normalizedQuery = normalizeLookupValue(command.payload.taskQuery);
+  const exact = tasks.find((task) => normalizeLookupValue(task.title) === normalizedQuery);
+  if (exact) {
+    command.payload.recordId = exact.id;
+    return null;
+  }
+
+  if (tasks.length === 1) {
+    command.payload.recordId = tasks[0].id;
+    return null;
+  }
+
+  return {
+    type: "selection",
+    payload: buildTaskSelectionResponse(command, tasks)
+  };
+}
+
+function slackPayloadForResult(result) {
+  const responseType = isPublicSuccessAction(result.action) ? "in_channel" : "ephemeral";
+  return {
+    response_type: responseType,
+    text: slackResultText(result)
+  };
 }
 
 async function prepareSlackCommandResponse({ text, fallbackWorkspace }) {
   const command = parseHumanCommand(text, fallbackWorkspace);
-  const workspaceRef = command.payload?.workspace;
 
-  if ((command.action === "create" || command.action === "bulk_create" || command.action === "search") && workspaceRef) {
-    const candidates = await findWorkspaceMatches(workspaceRef, {
-      limit: 5,
-      includeArchived: true
-    });
+  const workspaceResolution = await maybeResolveWorkspace(command);
+  if (workspaceResolution) {
+    return workspaceResolution;
+  }
 
-    if (!candidates.length) {
-      const allWorkspaces = await findWorkspaceMatches("", { limit: 5, includeArchived: true });
-      return {
-        type: "selection",
-        payload: buildWorkspaceSelectionResponse(command, allWorkspaces, { noGoodMatch: true })
-      };
-    }
-
-    const [best, second] = candidates;
-    const strongMatch = best.score >= 0.9;
-    const clearWinner = !second || best.score - second.score >= 0.08;
-
-    if (!(strongMatch && clearWinner)) {
-      return {
-        type: "selection",
-        payload: buildWorkspaceSelectionResponse(command, candidates, { noGoodMatch: best.score < 0.9 })
-      };
-    }
-
-    command.payload.workspace = best.name;
-    const result = await dispatchParsedCommand(command);
-    return {
-      type: "result",
-      payload: {
-        response_type: "ephemeral",
-        text: slackResultText(result)
-      }
-    };
+  const taskResolution = await maybeResolveTask(command);
+  if (taskResolution) {
+    return taskResolution;
   }
 
   const result = await dispatchParsedCommand(command);
   return {
     type: "result",
-    payload: {
-      response_type: "ephemeral",
-      text: slackResultText(result)
-    }
+    payload: slackPayloadForResult(result)
   };
+}
+
+async function processSlackCommand({ text, fallbackWorkspace, channel, threadTs, responseUrl, userId }) {
+  try {
+    const outcome = await prepareSlackCommandResponse({ text, fallbackWorkspace });
+
+    if (responseUrl) {
+      await fetch(responseUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        body: JSON.stringify(outcome.payload)
+      });
+      return { ok: true };
+    }
+
+    if (!channel) {
+      return { ok: true };
+    }
+
+    if (outcome.payload.response_type === "ephemeral") {
+      await postSlackEphemeral(channel, userId, outcome.payload.text, outcome.payload.blocks);
+    } else {
+      await postSlackMessage(channel, outcome.payload.text, threadTs);
+    }
+
+    return { ok: true };
+  } catch (error) {
+    const message = `Blue command failed: ${error.message}`;
+
+    if (responseUrl) {
+      await fetch(responseUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        body: JSON.stringify({
+          response_type: "ephemeral",
+          text: message
+        })
+      });
+    } else if (channel && userId) {
+      await postSlackEphemeral(channel, userId, message);
+    }
+
+    return { ok: false, error: error.message };
+  }
 }
 
 app.use("/email/inbound", express.json());
@@ -382,7 +575,8 @@ app.post("/slack/events", async (req, res) => {
       text,
       fallbackWorkspace: workspace,
       channel: event.channel,
-      threadTs: event.thread_ts || event.ts
+      threadTs: event.thread_ts || event.ts,
+      userId: event.user
     });
   } catch (error) {
     return res.status(400).json({ ok: false, error: error.message });
@@ -436,20 +630,41 @@ app.post("/slack/interactions", async (req, res) => {
       });
     }
 
-    if (action.action_id !== "blue_select_workspace") {
+    if (action.action_id !== "blue_select_workspace" && action.action_id !== "blue_select_task") {
       return res.json({ ok: true, ignored: true });
     }
 
     const command = fromSlackJson(action.value);
+    const workspaceResolution = await maybeResolveWorkspace(command);
+    if (workspaceResolution) {
+      return res.json(workspaceResolution.payload);
+    }
+
+    const taskResolution = await maybeResolveTask(command);
+    if (taskResolution) {
+      return res.json(taskResolution.payload);
+    }
+
     const result = await dispatchParsedCommand(command);
+    const message = slackResultText(result);
+
+    if (isPublicSuccessAction(result.action) && payload.channel?.id) {
+      await postSlackMessage(payload.channel.id, message, payload.message?.thread_ts || payload.message?.ts);
+      return res.json({
+        replace_original: true,
+        text: "Done. I posted the update in the channel."
+      });
+    }
 
     return res.json({
       replace_original: true,
-      text: slackResultText(result)
+      response_type: "ephemeral",
+      text: message
     });
   } catch (error) {
     return res.json({
       replace_original: true,
+      response_type: "ephemeral",
       text: `Blue command failed: ${error.message}`
     });
   }

@@ -626,6 +626,25 @@ export async function searchRecords(project, queryText, filters = {}) {
   };
 }
 
+export async function getRecord(recordId) {
+  const query = `
+    query GetRecord($id: String!) {
+      todo(id: $id) {
+        ${TODO_FIELDS}
+      }
+    }
+  `;
+
+  const data = await blueGraphql(query, { id: recordId });
+  const todo = normalizeTodo(data.todo);
+
+  if (!todo) {
+    throw new Error(`Task '${recordId}' was not found in Blue.`);
+  }
+
+  return { data: todo };
+}
+
 export async function createRecord(project, input) {
   const mutation = `
     mutation CreateRecord($input: CreateTodoInput!) {

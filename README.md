@@ -173,8 +173,19 @@ This version supports a lightweight command syntax:
 - `create in MA-EU: Fix login timeout | desc: Session expires after 5 min | assignee: Akash H`
 - `bulk create in DataCX - Active: desc: Q3 launch tasks | assignee: Akash H | Task A ; Task B ; Task C`
 - `search in 4ay-AI-CRM: onboarding`
-- `comment rec_123: Please prioritize this`
-- `move rec_123 to Done`
+- `list tasks in DataCX - Active`
+- `list tasks in DataCX - Active: QA`
+- `status in DataCX - Active: checkout footer`
+- `update in DataCX - Active: checkout footer | desc: Repro on iPhone Safari | assignee: Akash H`
+- `comment in DataCX - Active: checkout footer | Please prioritize this`
+- `move in DataCX - Active: checkout footer | Done`
+
+The Slack bot now supports task search and selection for status, update, move, and comment flows, so users do not need to manually copy Blue task IDs in normal usage.
+
+Visibility behavior:
+
+- Help, search results, list views, and errors are private
+- Successful create, bulk create, update, move, and comment actions are posted to the channel
 
 You can use either:
 
@@ -216,6 +227,11 @@ Optional slash command setup:
 /blue create in MA-EU: Fix login timeout | desc: Session expires after 5 min | assignee: Akash H
 /blue bulk create in DataCX - Active: desc: Q3 launch tasks | assignee: Akash H | Fix login timeout ; Add QA checklist ; Review handoff
 /blue search in 4ay-AI-CRM: onboarding
+/blue list tasks in DataCX - Active
+/blue status in DataCX - Active: checkout footer
+/blue update in DataCX - Active: checkout footer | desc: Repro on iPhone Safari | assignee: Akash H
+/blue comment in DataCX - Active: checkout footer | Please verify on iPhone 14
+/blue move in DataCX - Active: checkout footer | QA
 ```
 
 ## Email Commands
