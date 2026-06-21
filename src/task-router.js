@@ -99,6 +99,7 @@ const listTaskSchema = z.object({
   projectId: z.string().optional(),
   workspace: z.string().optional(),
   workspaceId: z.string().optional(),
+  allWorkspaces: z.boolean().optional(),
   list: z.string().optional(),
   done: z.boolean().optional(),
   assignee: z.string().optional(),
@@ -128,6 +129,7 @@ export function getSlackHelpText() {
     "/blue list tasks in DataCX - Active | assignee: Akash H",
     "/blue tasks for Akash H in DataCX - Active",
     "/blue tasks for Akash H in DataCX - Active: QA",
+    "/blue tasks for Akash H in all workspaces",
     "",
     "6. Check task status",
     "/blue status in DataCX - Active: checkout footer",
@@ -488,6 +490,85 @@ export async function handleStatusTask(input) {
 
 export async function handleListTasks(input = {}) {
   const parsed = listTaskSchema.parse(input);
+
+  if (parsed.allWorkspaces) {
+    if (!parsed.assignee) {
+      throw new Error("Please specify an assignee for all-workspaces task listing.");
+    }
+
+    const workspaceResult = await listWorkspaces();
+    const workspaces = (Array.isArray(workspaceResult.data) ? workspaceResult.data : []).filter(
+      (workspace) => !workspace.archived
+    );
+
+    const tasks = [];
+    let matchedWorkspaceCount = 0;
+
+    for (const workspace of workspaces) {
+      let assigneeId;
+
+      try {
+        assigneeId = (await resolveAssignees(workspace.id, [parsed.assignee]))[0]?.id;
+      } catch (error) {
+        if (String(error.message || "").includes("was not found in this workspace")) {
+          continue;
+        }
+
+        throw error;
+      }
+
+      if (!assigneeId) {
+        continue;
+      }
+
+      matchedWorkspaceCount += 1;
+
+      const project = {
+        name: workspace.name,
+        company: config.blueDefaultCompany,
+        workspaceId: workspace.id,
+        listId: null,
+        defaultAssignees: [],
+        defaultTags: []
+      };
+
+      const result = await listRecords(project, {
+        done: parsed.done,
+        assignee: assigneeId
+      });
+
+      let workspaceTasks = Array.isArray(result.data) ? result.data : [];
+
+      if (parsed.list) {
+        const normalizedList = normalizeLookupValue(parsed.list);
+        workspaceTasks = workspaceTasks.filter(
+          (task) => normalizeLookupValue(task.list?.name) === normalizedList
+        );
+      }
+
+      tasks.push(...workspaceTasks);
+    }
+
+    if (!matchedWorkspaceCount) {
+      throw new Error(
+        `I couldn't find assignee '${parsed.assignee}' in any accessible Blue workspace.`
+      );
+    }
+
+    const limit = parsed.limit || 50;
+
+    return {
+      action: "list",
+      project: "All Workspaces",
+      workspace: "All Workspaces",
+      allWorkspaces: true,
+      list: parsed.list || null,
+      assignee: parsed.assignee,
+      matchedWorkspaceCount,
+      result: sortTasksForSlack(tasks).slice(0, limit)
+    };
+  }
+
   const target = await resolveTargetContext(parsed);
   const assigneeId = parsed.assignee
     ? (await resolveAssignees(target.project.workspaceId, [parsed.assignee]))[0]?.id
@@ -934,17 +1015,13 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     if (!workspace) {
       throw new Error("Please choose a workspace. Example: 'tasks for Akash H in DataCX - Active'.");
     }
-
-    if (normalizeLookupValue(workspace) === "all workspaces") {
-      throw new Error(
-        "Tasks across all workspaces are not supported yet. Please specify one workspace, for example: 'tasks for Akash H in datacx'."
-      );
-    }
+    const allWorkspaces = normalizeLookupValue(workspace) === "all workspaces";
 
     return {
       action: "list",
       payload: {
-        workspace,
+        workspace: allWorkspaces ? undefined : workspace,
+        allWorkspaces,
         assignee: tasksForMatch[1].trim(),
         list: tasksForMatch[3]?.trim() || undefined,
         done: false

@@ -119,11 +119,11 @@ function isPublicSuccessAction(action) {
   return ["create", "bulk_create", "update", "move", "comment"].includes(action);
 }
 
-function taskSummaryLine(task, index) {
+function taskSummaryLine(task, index, { includeWorkspace = false } = {}) {
   const link = buildBlueTaskUrl(task);
   const assignees = formatAssignees(task.assignees);
 
-  return `${index + 1}. ${task.title} | Status: ${task.list?.name || "Unknown"}${
+  return `${index + 1}. ${task.title}${includeWorkspace ? ` | Workspace: ${task.list?.workspace || "Unknown"}` : ""} | Status: ${task.list?.name || "Unknown"}${
     assignees ? ` | Assignee: ${assignees}` : ""
   }${link ? ` | Link: ${link}` : ""}`;
 }
@@ -143,7 +143,11 @@ function buildInteractiveTaskBlocks(result, channelId, userId) {
   const tasks = Array.isArray(result.result) ? result.result : [];
   const workspace = result.workspace || result.project || "Blue";
   const header =
-    result.action === "search"
+    result.allWorkspaces
+      ? `Tasks across ${result.matchedWorkspaceCount || 0} workspaces assigned to ${result.assignee}${
+          result.list ? ` in ${result.list}` : ""
+        }:`
+      : result.action === "search"
       ? `Top matching tasks in ${workspace} for "${result.query}"${
           result.assignee ? ` assigned to ${result.assignee}` : ""
         }:`
@@ -171,6 +175,7 @@ function buildInteractiveTaskBlocks(result, channelId, userId) {
         type: "mrkdwn",
         text:
           `*${index + 1}. ${task.title}*\n` +
+          `${result.allWorkspaces ? `Workspace: ${task.list?.workspace || "Unknown"}\n` : ""}` +
           `Status: ${task.list?.name || "Unknown"}\n` +
           `Assignee: ${assignees}` +
           (link ? `\n<${link}|Open in Blue>` : "")
@@ -290,12 +295,21 @@ function slackResultText(result) {
     }
 
     const header =
-      result.action === "search"
+      result.allWorkspaces
+        ? `Tasks across ${result.matchedWorkspaceCount || 0} workspaces assigned to ${result.assignee}${
+            result.list ? ` in ${result.list}` : ""
+          }:`
+        : result.action === "search"
         ? `Top matching tasks in ${workspace} for "${result.query}"${
             result.assignee ? ` assigned to ${result.assignee}` : ""
           }:`
         : `Tasks in ${workspace}${list}${result.assignee ? ` assigned to ${result.assignee}` : ""}:`;
-    return [header, ...result.result.map((task, index) => taskSummaryLine(task, index))].join("\n");
+    return [
+      header,
+      ...result.result.map((task, index) =>
+        taskSummaryLine(task, index, { includeWorkspace: Boolean(result.allWorkspaces) })
+      )
+    ].join("\n");
   }
 
   if (!result?.result || typeof result.result === "string") {
