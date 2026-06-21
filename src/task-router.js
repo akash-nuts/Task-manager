@@ -428,15 +428,19 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     }
 
     const sentenceMatch = cleaned.match(/^(.+?[.!?])(?:\s|$)/);
-    const candidate = sentenceMatch ? sentenceMatch[1] : cleaned;
-    const trimmedCandidate = candidate.replace(/[.!?]+$/, "").trim();
+    const candidate = (sentenceMatch ? sentenceMatch[1] : cleaned).replace(/[.!?]+$/, "").trim();
+    const words = candidate.split(" ").filter(Boolean);
 
-    if (trimmedCandidate.length <= 80) {
-      return trimmedCandidate;
+    if (words.length <= 8 && candidate.length <= 60) {
+      return candidate;
     }
 
-    const shortened = trimmedCandidate.slice(0, 77).trimEnd();
-    return `${shortened}...`;
+    const shortWords = words.slice(0, 8).join(" ").trim();
+    if (shortWords.length <= 60) {
+      return `${shortWords}...`;
+    }
+
+    return `${candidate.slice(0, 57).trimEnd()}...`;
   }
 
   function parseSimpleCreateSegments(rawBody) {
