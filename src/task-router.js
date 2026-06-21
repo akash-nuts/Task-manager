@@ -131,7 +131,9 @@ export function getSlackHelpText() {
     "",
     "3. Bulk create tasks",
     "/blue bulk create in DataCX - Active: desc: Sprint intake | assignee: Akash H | Fix login ; Add QA checklist ; Review handoff",
-    "/blue import tasks in DataCX - Active: <paste Excel rows with Features, Description, POC, Status>",
+    "/blue bulk import tasks in DataCX - Active:",
+    "Task title | Description | Assignee",
+    "Another task | Description | Assignee",
     "",
     "4. Search tasks",
     "/blue search in DataCX - Active: checkout",
@@ -928,90 +930,45 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
-  function parseDelimitedTable(rawBody, delimiter = "\t") {
-    const text = String(rawBody || "").replace(/\r\n/g, "\n");
-    const rows = [];
-    let row = [];
-    let cell = "";
-    let inQuotes = false;
-
-    for (let index = 0; index < text.length; index += 1) {
-      const char = text[index];
-      const next = text[index + 1];
-
-      if (char === '"') {
-        if (inQuotes && next === '"') {
-          cell += '"';
-          index += 1;
-        } else {
-          inQuotes = !inQuotes;
-        }
-        continue;
-      }
-
-      if (!inQuotes && char === delimiter) {
-        row.push(cell);
-        cell = "";
-        continue;
-      }
-
-      if (!inQuotes && char === "\n") {
-        row.push(cell);
-        rows.push(row);
-        row = [];
-        cell = "";
-        continue;
-      }
-
-      cell += char;
-    }
-
-    row.push(cell);
-    if (row.some((value) => String(value || "").trim())) {
-      rows.push(row);
-    }
-
-    return rows;
-  }
-
-  function normalizeHeaderName(value) {
-    return normalizeLookupValue(value).replace(/\s+/g, "");
-  }
-
   function parseImportBody(rawBody) {
-    const rows = parseDelimitedTable(rawBody, "\t").filter((row) =>
-      row.some((cell) => String(cell || "").trim())
-    );
+    const rows = String(rawBody || "")
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((row) => row.trim())
+      .filter(Boolean);
 
-    if (rows.length < 2) {
+    if (!rows.length) {
       throw new Error(
-        "Import needs a header row and at least one task row. Paste the Excel rows including headers like Features, Description, POC, Status."
+        "Bulk import needs at least one row. Use: '<task title> | <description> | <assignee>'."
       );
     }
 
-    const headers = rows[0].map((cell) => normalizeHeaderName(cell));
-    const titleIndex = headers.findIndex((header) => ["features", "title", "task", "tasktitle"].includes(header));
-    const descriptionIndex = headers.findIndex((header) =>
-      ["description", "desc", "details"].includes(header)
-    );
-    const assigneeIndex = headers.findIndex((header) =>
-      ["poc", "assignee", "owner"].includes(header)
-    );
-    const listIndex = headers.findIndex((header) => ["status", "list", "column"].includes(header));
+    return rows.map((row, index) => {
+      const parts = row.split("|").map((part) => part.trim());
+      if (parts.length < 3) {
+        throw new Error(
+          `Row ${index + 1} is invalid. Use exactly this format per line: '<task title> | <description> | <assignee>'.`
+        );
+      }
 
-    if (titleIndex === -1) {
-      throw new Error("Import requires a title column such as Features or Title.");
-    }
+      const [title, description, assignee, list] = parts;
+      if (!title) {
+        throw new Error(`Row ${index + 1} is missing a task title.`);
+      }
+      if (!description) {
+        throw new Error(`Row ${index + 1} is missing a description.`);
+      }
+      if (!assignee) {
+        throw new Error(`Row ${index + 1} is missing an assignee.`);
+      }
 
-    return rows
-      .slice(1)
-      .map((row) => ({
-        title: String(row[titleIndex] || "").trim(),
-        description: descriptionIndex === -1 ? "" : String(row[descriptionIndex] || "").trim(),
-        assignee: assigneeIndex === -1 ? "" : String(row[assigneeIndex] || "").trim(),
-        list: listIndex === -1 ? "" : String(row[listIndex] || "").trim()
-      }))
-      .filter((row) => row.title);
+      return {
+        title,
+        description,
+        assignee,
+        list: list || ""
+      };
+    });
   }
 
   function parseUpdateSegments(rawBody) {
@@ -1109,7 +1066,7 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
-  const importMatch = trimmed.match(/^(?:import\s+tasks|bulk\s+import)(?:\s+in\s+(.+?))?\s*:\s*([\s\S]+)$/i);
+  const importMatch = trimmed.match(/^(?:bulk\s+import\s+tasks|import\s+tasks|bulk\s+import)(?:\s+in\s+(.+?))?\s*:\s*([\s\S]+)$/i);
   if (importMatch) {
     const workspace = importMatch[1]?.trim() || fallbackWorkspace;
     if (!workspace) {
