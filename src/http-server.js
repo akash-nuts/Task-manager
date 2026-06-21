@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import express from "express";
 import { waitUntil } from "@vercel/functions";
 import { config } from "./config.js";
-import { findWorkspaceMatches, searchRecords } from "./blue-api.js";
+import { findWorkspaceMatches, getRecord, listLists, searchRecords } from "./blue-api.js";
 import { dispatchHumanCommand, dispatchParsedCommand, parseHumanCommand } from "./task-router.js";
 
 const app = express();
@@ -128,6 +128,101 @@ function taskSummaryLine(task, index) {
   }${link ? ` | Link: ${link}` : ""}`;
 }
 
+function taskActionValue(task, channelId, userId) {
+  return toSlackJson({
+    recordId: task.id,
+    title: task.title,
+    workspaceId: task.list?.workspaceId || "",
+    workspace: task.list?.workspace || "",
+    channelId: channelId || "",
+    userId: userId || ""
+  });
+}
+
+function buildInteractiveTaskBlocks(result, channelId, userId) {
+  const tasks = Array.isArray(result.result) ? result.result : [];
+  const workspace = result.workspace || result.project || "Blue";
+  const header =
+    result.action === "search"
+      ? `Top matching tasks in ${workspace} for "${result.query}"${
+          result.assignee ? ` assigned to ${result.assignee}` : ""
+        }:`
+      : `Tasks in ${workspace}${result.list ? ` (${result.list})` : ""}${
+          result.assignee ? ` assigned to ${result.assignee}` : ""
+        }:`;
+
+  const blocks = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: header
+      }
+    }
+  ];
+
+  tasks.slice(0, 5).forEach((task, index) => {
+    const link = buildBlueTaskUrl(task);
+    const assignees = formatAssignees(task.assignees) || "Unassigned";
+
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text:
+          `*${index + 1}. ${task.title}*\n` +
+          `Status: ${task.list?.name || "Unknown"}\n` +
+          `Assignee: ${assignees}` +
+          (link ? `\n<${link}|Open in Blue>` : "")
+      }
+    });
+
+    blocks.push({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "Comment"
+          },
+          action_id: "blue_open_comment_modal",
+          value: taskActionValue(task, channelId, userId)
+        },
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "Append Desc"
+          },
+          action_id: "blue_open_append_description_modal",
+          value: taskActionValue(task, channelId, userId)
+        },
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "Change Assignee"
+          },
+          action_id: "blue_open_assignee_modal",
+          value: taskActionValue(task, channelId, userId)
+        },
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "Change Status"
+          },
+          action_id: "blue_open_status_modal",
+          value: taskActionValue(task, channelId, userId)
+        }
+      ]
+    });
+  });
+
+  return blocks;
+}
+
 function slackResultText(result) {
   const workspace = result.workspace || result.project || "Blue";
   const list = result.list ? ` in ${result.list}` : "";
@@ -208,6 +303,19 @@ function slackResultText(result) {
   }
 
   return `Completed in ${workspace}${list}.\n${JSON.stringify(result.result, null, 2)}`;
+}
+
+function slackResponseForResult(result, { channelId, userId } = {}) {
+  const payload = {
+    response_type: isPublicSuccessAction(result.action) ? "in_channel" : "ephemeral",
+    text: slackResultText(result)
+  };
+
+  if (["search", "list"].includes(result.action) && Array.isArray(result.result) && result.result.length) {
+    payload.blocks = buildInteractiveTaskBlocks(result, channelId, userId);
+  }
+
+  return payload;
 }
 
 function buildWorkspaceSelectionResponse(command, candidates, { noGoodMatch = false } = {}) {
@@ -361,6 +469,242 @@ async function postSlackEphemeral(channel, user, text, blocks) {
   });
 }
 
+async function openSlackModal(triggerId, view) {
+  return postSlackApi("views.open", {
+    trigger_id: triggerId,
+    view
+  });
+}
+
+function modalMetadata(base) {
+  return JSON.stringify(base);
+}
+
+function getViewInputValue(view, blockId, actionId) {
+  return view?.state?.values?.[blockId]?.[actionId]?.value || "";
+}
+
+function getSelectedOptionValue(view, blockId, actionId) {
+  return view?.state?.values?.[blockId]?.[actionId]?.selected_option?.value || "";
+}
+
+async function openCommentModal(triggerId, metadata) {
+  return openSlackModal(triggerId, {
+    type: "modal",
+    callback_id: "blue_submit_comment_modal",
+    title: {
+      type: "plain_text",
+      text: "Add Comment"
+    },
+    submit: {
+      type: "plain_text",
+      text: "Save"
+    },
+    close: {
+      type: "plain_text",
+      text: "Cancel"
+    },
+    private_metadata: modalMetadata(metadata),
+    blocks: [
+      {
+        type: "input",
+        block_id: "comment_block",
+        label: {
+          type: "plain_text",
+          text: `Comment on ${metadata.title.slice(0, 60)}`
+        },
+        element: {
+          type: "plain_text_input",
+          action_id: "comment_value",
+          multiline: true
+        }
+      }
+    ]
+  });
+}
+
+async function openAppendDescriptionModal(triggerId, metadata) {
+  return openSlackModal(triggerId, {
+    type: "modal",
+    callback_id: "blue_submit_append_description_modal",
+    title: {
+      type: "plain_text",
+      text: "Append Description"
+    },
+    submit: {
+      type: "plain_text",
+      text: "Append"
+    },
+    close: {
+      type: "plain_text",
+      text: "Cancel"
+    },
+    private_metadata: modalMetadata(metadata),
+    blocks: [
+      {
+        type: "input",
+        block_id: "append_block",
+        label: {
+          type: "plain_text",
+          text: `Append to ${metadata.title.slice(0, 60)}`
+        },
+        element: {
+          type: "plain_text_input",
+          action_id: "append_value",
+          multiline: true
+        }
+      }
+    ]
+  });
+}
+
+async function openAssigneeModal(triggerId, metadata) {
+  return openSlackModal(triggerId, {
+    type: "modal",
+    callback_id: "blue_submit_assignee_modal",
+    title: {
+      type: "plain_text",
+      text: "Change Assignee"
+    },
+    submit: {
+      type: "plain_text",
+      text: "Update"
+    },
+    close: {
+      type: "plain_text",
+      text: "Cancel"
+    },
+    private_metadata: modalMetadata(metadata),
+    blocks: [
+      {
+        type: "input",
+        block_id: "assignee_block",
+        label: {
+          type: "plain_text",
+          text: `Assignee for ${metadata.title.slice(0, 60)}`
+        },
+        element: {
+          type: "plain_text_input",
+          action_id: "assignee_value",
+          placeholder: {
+            type: "plain_text",
+            text: "Enter Blue assignee name"
+          }
+        }
+      }
+    ]
+  });
+}
+
+async function openStatusModal(triggerId, metadata) {
+  const lists = (await listLists(metadata.workspaceId)).data || [];
+  return openSlackModal(triggerId, {
+    type: "modal",
+    callback_id: "blue_submit_status_modal",
+    title: {
+      type: "plain_text",
+      text: "Change Status"
+    },
+    submit: {
+      type: "plain_text",
+      text: "Move"
+    },
+    close: {
+      type: "plain_text",
+      text: "Cancel"
+    },
+    private_metadata: modalMetadata(metadata),
+    blocks: [
+      {
+        type: "input",
+        block_id: "status_block",
+        label: {
+          type: "plain_text",
+          text: `Move ${metadata.title.slice(0, 60)} to`
+        },
+        element: {
+          type: "static_select",
+          action_id: "status_value",
+          options: lists.slice(0, 100).map((list) => ({
+            text: {
+              type: "plain_text",
+              text: list.name
+            },
+            value: list.name
+          }))
+        }
+      }
+    ]
+  });
+}
+
+async function handleModalSubmission(payload) {
+  const metadata = JSON.parse(payload.view?.private_metadata || "{}");
+  const channelId = metadata.channelId;
+  const userId = metadata.userId || payload.user?.id;
+
+  if (payload.view.callback_id === "blue_submit_comment_modal") {
+    const text = getViewInputValue(payload.view, "comment_block", "comment_value").trim();
+    const result = await dispatchParsedCommand({
+      action: "comment",
+      payload: {
+        recordId: metadata.recordId,
+        text
+      }
+    });
+
+    await postSlackEphemeral(channelId, userId, slackResultText(result));
+    return;
+  }
+
+  if (payload.view.callback_id === "blue_submit_append_description_modal") {
+    const appendText = getViewInputValue(payload.view, "append_block", "append_value").trim();
+    const current = (await getRecord(metadata.recordId)).data;
+    const existingDescription = current.description || "";
+    const mergedDescription = existingDescription
+      ? `${existingDescription}\n\n${appendText}`
+      : appendText;
+
+    const result = await dispatchParsedCommand({
+      action: "update",
+      payload: {
+        recordId: metadata.recordId,
+        description: mergedDescription
+      }
+    });
+
+    await postSlackEphemeral(channelId, userId, slackResultText(result));
+    return;
+  }
+
+  if (payload.view.callback_id === "blue_submit_assignee_modal") {
+    const assignee = getViewInputValue(payload.view, "assignee_block", "assignee_value").trim();
+    const result = await dispatchParsedCommand({
+      action: "update",
+      payload: {
+        recordId: metadata.recordId,
+        assignees: [assignee]
+      }
+    });
+
+    await postSlackEphemeral(channelId, userId, slackResultText(result));
+    return;
+  }
+
+  if (payload.view.callback_id === "blue_submit_status_modal") {
+    const list = getSelectedOptionValue(payload.view, "status_block", "status_value");
+    const result = await dispatchParsedCommand({
+      action: "move",
+      payload: {
+        recordId: metadata.recordId,
+        list
+      }
+    });
+
+    await postSlackEphemeral(channelId, userId, slackResultText(result));
+  }
+}
+
 function createTaskSearchQuery(command) {
   if (command.action === "status") {
     return command.payload.taskQuery;
@@ -452,15 +796,7 @@ async function maybeResolveTask(command) {
   };
 }
 
-function slackPayloadForResult(result) {
-  const responseType = isPublicSuccessAction(result.action) ? "in_channel" : "ephemeral";
-  return {
-    response_type: responseType,
-    text: slackResultText(result)
-  };
-}
-
-async function prepareSlackCommandResponse({ text, fallbackWorkspace }) {
+async function prepareSlackCommandResponse({ text, fallbackWorkspace, channelId, userId }) {
   const command = parseHumanCommand(text, fallbackWorkspace);
 
   const workspaceResolution = await maybeResolveWorkspace(command);
@@ -476,13 +812,18 @@ async function prepareSlackCommandResponse({ text, fallbackWorkspace }) {
   const result = await dispatchParsedCommand(command);
   return {
     type: "result",
-    payload: slackPayloadForResult(result)
+    payload: slackResponseForResult(result, { channelId, userId })
   };
 }
 
 async function processSlackCommand({ text, fallbackWorkspace, channel, threadTs, responseUrl, userId }) {
   try {
-    const outcome = await prepareSlackCommandResponse({ text, fallbackWorkspace });
+    const outcome = await prepareSlackCommandResponse({
+      text,
+      fallbackWorkspace,
+      channelId: channel,
+      userId
+    });
 
     if (responseUrl) {
       await fetch(responseUrl, {
@@ -588,13 +929,15 @@ app.post("/slack/events", async (req, res) => {
 
     res.json({ ok: true });
 
-    runInBackground(processSlackCommand({
-      text,
-      fallbackWorkspace: workspace,
-      channel: event.channel,
-      threadTs: event.thread_ts || event.ts,
-      userId: event.user
-    }));
+    runInBackground(
+      processSlackCommand({
+        text,
+        fallbackWorkspace: workspace,
+        channel: event.channel,
+        threadTs: event.thread_ts || event.ts,
+        userId: event.user
+      })
+    );
   } catch (error) {
     return res.status(400).json({ ok: false, error: error.message });
   }
@@ -617,13 +960,15 @@ app.post("/slack/commands", async (req, res) => {
       text: "Working on it..."
     });
 
-    runInBackground(processSlackCommand({
-      text,
-      fallbackWorkspace: config.slackDefaultProject,
-      responseUrl,
-      channel,
-      userId
-    }));
+    runInBackground(
+      processSlackCommand({
+        text,
+        fallbackWorkspace: config.slackDefaultProject,
+        responseUrl,
+        channel,
+        userId
+      })
+    );
 
     return;
   } catch (error) {
@@ -643,6 +988,12 @@ app.post("/slack/interactions", async (req, res) => {
     const params = new URLSearchParams(req.body.toString("utf8"));
     const payload = JSON.parse(params.get("payload") || "{}");
 
+    if (payload.type === "view_submission") {
+      res.json({ response_action: "clear" });
+      runInBackground(handleModalSubmission(payload));
+      return;
+    }
+
     if (payload.type !== "block_actions") {
       return res.json({ ok: true, ignored: true });
     }
@@ -657,6 +1008,31 @@ app.post("/slack/interactions", async (req, res) => {
         replace_original: true,
         text: "Canceled."
       });
+    }
+
+    const modalActions = [
+      "blue_open_comment_modal",
+      "blue_open_append_description_modal",
+      "blue_open_assignee_modal",
+      "blue_open_status_modal"
+    ];
+
+    if (modalActions.includes(action.action_id)) {
+      const metadata = fromSlackJson(action.value);
+      metadata.userId = payload.user?.id || metadata.userId;
+      metadata.channelId = payload.channel?.id || metadata.channelId;
+
+      if (action.action_id === "blue_open_comment_modal") {
+        await openCommentModal(payload.trigger_id, metadata);
+      } else if (action.action_id === "blue_open_append_description_modal") {
+        await openAppendDescriptionModal(payload.trigger_id, metadata);
+      } else if (action.action_id === "blue_open_assignee_modal") {
+        await openAssigneeModal(payload.trigger_id, metadata);
+      } else if (action.action_id === "blue_open_status_modal") {
+        await openStatusModal(payload.trigger_id, metadata);
+      }
+
+      return res.json({ ok: true });
     }
 
     if (action.action_id !== "blue_select_workspace" && action.action_id !== "blue_select_task") {
