@@ -1,4 +1,5 @@
 node_modules/
+.npm-cache/
 .env
 blue-projects.local.json
 tools/blue-cli/

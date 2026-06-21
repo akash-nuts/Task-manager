@@ -1,10 +1,25 @@
 import crypto from "node:crypto";
 import express from "express";
+import { waitUntil } from "@vercel/functions";
 import { config } from "./config.js";
 import { findWorkspaceMatches, searchRecords } from "./blue-api.js";
 import { dispatchHumanCommand, dispatchParsedCommand, parseHumanCommand } from "./task-router.js";
 
 const app = express();
+
+function runInBackground(promise) {
+  try {
+    waitUntil(
+      Promise.resolve(promise).catch((error) => {
+        console.error("Background Slack task failed:", error);
+      })
+    );
+  } catch {
+    void Promise.resolve(promise).catch((error) => {
+      console.error("Background Slack task failed:", error);
+    });
+  }
+}
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
@@ -573,13 +588,13 @@ app.post("/slack/events", async (req, res) => {
 
     res.json({ ok: true });
 
-    void processSlackCommand({
+    runInBackground(processSlackCommand({
       text,
       fallbackWorkspace: workspace,
       channel: event.channel,
       threadTs: event.thread_ts || event.ts,
       userId: event.user
-    });
+    }));
   } catch (error) {
     return res.status(400).json({ ok: false, error: error.message });
   }
@@ -602,13 +617,13 @@ app.post("/slack/commands", async (req, res) => {
       text: "Working on it..."
     });
 
-    void processSlackCommand({
+    runInBackground(processSlackCommand({
       text,
       fallbackWorkspace: config.slackDefaultProject,
       responseUrl,
       channel,
       userId
-    });
+    }));
 
     return;
   } catch (error) {
