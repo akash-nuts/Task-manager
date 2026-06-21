@@ -127,6 +127,7 @@ export function getSlackHelpText() {
     "/blue list tasks in DataCX - Active: In Progress",
     "/blue list tasks in DataCX - Active | assignee: Akash H",
     "/blue tasks for Akash H in DataCX - Active",
+    "/blue tasks for Akash H in DataCX - Active: QA",
     "",
     "6. Check task status",
     "/blue status in DataCX - Active: checkout footer",
@@ -927,11 +928,17 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
-  const tasksForMatch = trimmed.match(/^tasks\s+for\s+(.+?)(?:\s+in\s+(.+))?$/i);
+  const tasksForMatch = trimmed.match(/^tasks\s+for\s+(.+?)(?:\s+in\s+(.+?))?(?:\s*:\s*(.+))?$/i);
   if (tasksForMatch) {
     const workspace = tasksForMatch[2]?.trim() || fallbackWorkspace;
     if (!workspace) {
       throw new Error("Please choose a workspace. Example: 'tasks for Akash H in DataCX - Active'.");
+    }
+
+    if (normalizeLookupValue(workspace) === "all workspaces") {
+      throw new Error(
+        "Tasks across all workspaces are not supported yet. Please specify one workspace, for example: 'tasks for Akash H in datacx'."
+      );
     }
 
     return {
@@ -939,6 +946,7 @@ export function parseHumanCommand(text, fallbackWorkspace) {
       payload: {
         workspace,
         assignee: tasksForMatch[1].trim(),
+        list: tasksForMatch[3]?.trim() || undefined,
         done: false
       }
     };
