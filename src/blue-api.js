@@ -88,6 +88,57 @@ function normalizeLookupValue(value) {
     .trim();
 }
 
+function scoreTaskMatch(todo, queryText) {
+  const rawQuery = String(queryText || "").trim().toLowerCase();
+  const query = normalizeLookupValue(queryText);
+  if (!rawQuery && !query) {
+    return 0;
+  }
+
+  const title = String(todo?.title || "");
+  const description = String(todo?.description || todo?.text || "");
+  const normalizedTitle = normalizeLookupValue(title);
+  const normalizedDescription = normalizeLookupValue(description);
+
+  if (String(title).toLowerCase() === rawQuery) {
+    return 1;
+  }
+
+  if (normalizedTitle === query) {
+    return 0.98;
+  }
+
+  if (normalizedTitle.startsWith(query)) {
+    return 0.94;
+  }
+
+  if (normalizedTitle.includes(query)) {
+    return 0.9;
+  }
+
+  if (normalizedDescription.includes(query)) {
+    return 0.72;
+  }
+
+  const queryTokens = query.split(" ").filter(Boolean);
+  const titleTokens = normalizedTitle.split(" ").filter(Boolean);
+  const descriptionTokens = normalizedDescription.split(" ").filter(Boolean);
+  const tokenUniverse = new Set([...titleTokens, ...descriptionTokens]);
+  const matchedTokens = queryTokens.filter((token) =>
+    [...tokenUniverse].some((candidate) => candidate.includes(token) || token.includes(candidate))
+  ).length;
+
+  if (!matchedTokens) {
+    return 0;
+  }
+
+  const titleTokenMatches = queryTokens.filter((token) =>
+    titleTokens.some((candidate) => candidate.includes(token) || token.includes(candidate))
+  ).length;
+
+  return 0.45 + matchedTokens / Math.max(queryTokens.length, 1) * 0.25 + titleTokenMatches * 0.05;
+}
+
 function scoreWorkspaceMatch(workspace, workspaceRef) {
   const rawQuery = String(workspaceRef || "").trim().toLowerCase();
   const query = normalizeLookupValue(workspaceRef);
@@ -614,15 +665,34 @@ export async function searchRecords(project, queryText, filters = {}) {
     companyId: config.blueCompanyId
   });
 
-  const results = (data.search?.hits || [])
+  const apiResults = (data.search?.hits || [])
     .map((hit) => hit?._source)
     .filter((source) => source?.__typename === "Todo")
     .map(normalizeTodo)
     .filter((todo) => todo?.list?.workspaceId === project.workspaceId)
     .filter((todo) => (filters.done === undefined ? true : todo.done === filters.done));
 
+  if (apiResults.length > 0) {
+    return {
+      data: filters.limit ? apiResults.slice(0, filters.limit) : apiResults
+    };
+  }
+
+  const listResult = await listRecords(project, {
+    done: filters.done
+  });
+
+  const fallbackResults = (Array.isArray(listResult.data) ? listResult.data : [])
+    .map((todo) => ({
+      todo,
+      score: scoreTaskMatch(todo, queryText)
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score || left.todo.title.localeCompare(right.todo.title))
+    .map((entry) => entry.todo);
+
   return {
-    data: filters.limit ? results.slice(0, filters.limit) : results
+    data: filters.limit ? fallbackResults.slice(0, filters.limit) : fallbackResults
   };
 }
 
