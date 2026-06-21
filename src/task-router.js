@@ -393,14 +393,28 @@ export async function handleBulkImportTask(input) {
   const defaultList = await resolveList(target.project.workspaceId, null, target.project);
   const created = [];
   const errors = [];
+  const warnings = [];
 
   for (let index = 0; index < parsed.rows.length; index += 1) {
     const row = parsed.rows[index];
 
     try {
-      const assigneeIds = row.assignee
-        ? (await resolveAssignees(target.project.workspaceId, [row.assignee])).map((user) => user.id)
-        : [];
+      let assigneeIds = [];
+
+      if (row.assignee) {
+        try {
+          assigneeIds = (await resolveAssignees(target.project.workspaceId, [row.assignee])).map(
+            (user) => user.id
+          );
+        } catch (error) {
+          warnings.push({
+            rowNumber: index + 2,
+            title: row.title,
+            message: `Assignee '${row.assignee}' could not be resolved. Task was created without an assignee.`
+          });
+        }
+      }
+
       const list = row.list
         ? await resolveList(target.project.workspaceId, row.list, target.project)
         : defaultList;
@@ -431,8 +445,10 @@ export async function handleBulkImportTask(input) {
     result: {
       createdCount: created.length,
       errorCount: errors.length,
+      warningCount: warnings.length,
       created,
-      errors
+      errors,
+      warnings
     }
   };
 }

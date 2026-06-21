@@ -246,11 +246,19 @@ function slackResultText(result) {
   if (result.action === "bulk_import") {
     const items = result.result?.created || [];
     const errors = result.result?.errors || [];
+    const warnings = result.result?.warnings || [];
     const lines = [
-      `Imported ${result.result.createdCount} tasks into ${workspace}${list}.${errors.length ? ` ${errors.length} rows failed.` : ""}`
+      `Imported ${result.result.createdCount} tasks into ${workspace}${list}.${warnings.length ? ` ${warnings.length} warnings.` : ""}${errors.length ? ` ${errors.length} rows failed.` : ""}`
     ];
 
     items.slice(0, 10).forEach((task, index) => lines.push(taskSummaryLine(task, index)));
+
+    if (warnings.length) {
+      lines.push("Warnings:");
+      warnings.slice(0, 10).forEach((warning) => {
+        lines.push(`Row ${warning.rowNumber} (${warning.title}): ${warning.message}`);
+      });
+    }
 
     if (errors.length) {
       lines.push("Errors:");
