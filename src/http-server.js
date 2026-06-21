@@ -649,6 +649,8 @@ async function handleModalSubmission(payload) {
       action: "comment",
       payload: {
         recordId: metadata.recordId,
+        workspace: metadata.workspace,
+        workspaceId: metadata.workspaceId,
         text
       }
     });
@@ -659,7 +661,11 @@ async function handleModalSubmission(payload) {
 
   if (payload.view.callback_id === "blue_submit_append_description_modal") {
     const appendText = getViewInputValue(payload.view, "append_block", "append_value").trim();
-    const current = (await getRecord(metadata.recordId)).data;
+    const current = (
+      await getRecord(metadata.recordId, {
+        projectId: metadata.workspaceId || undefined
+      })
+    ).data;
     const existingDescription = current.description || "";
     const mergedDescription = existingDescription
       ? `${existingDescription}\n\n${appendText}`
@@ -669,6 +675,8 @@ async function handleModalSubmission(payload) {
       action: "update",
       payload: {
         recordId: metadata.recordId,
+        workspace: metadata.workspace,
+        workspaceId: metadata.workspaceId,
         description: mergedDescription
       }
     });
@@ -683,6 +691,8 @@ async function handleModalSubmission(payload) {
       action: "update",
       payload: {
         recordId: metadata.recordId,
+        workspace: metadata.workspace,
+        workspaceId: metadata.workspaceId,
         assignees: [assignee]
       }
     });
@@ -697,6 +707,8 @@ async function handleModalSubmission(payload) {
       action: "move",
       payload: {
         recordId: metadata.recordId,
+        workspace: metadata.workspace,
+        workspaceId: metadata.workspaceId,
         list
       }
     });

@@ -292,12 +292,12 @@ async function setTodoAssignees(todoId, assigneeIds) {
   const mutation = `
     mutation SetTodoAssignees($input: SetTodoAssigneesInput!) {
       setTodoAssignees(input: $input) {
-        ${TODO_FIELDS}
+        success
       }
     }
   `;
 
-  const data = await blueGraphql(
+  await blueGraphql(
     mutation,
     {
       input: {
@@ -307,8 +307,7 @@ async function setTodoAssignees(todoId, assigneeIds) {
     },
     { projectId: null }
   );
-
-  return normalizeTodo(data.setTodoAssignees);
+  return null;
 }
 
 async function setTodoTags(todoId, tagIds) {
@@ -708,7 +707,7 @@ export async function searchRecords(project, queryText, filters = {}) {
   };
 }
 
-export async function getRecord(recordId) {
+export async function getRecord(recordId, options = {}) {
   const query = `
     query GetRecord($id: String!) {
       todo(id: $id) {
@@ -717,7 +716,11 @@ export async function getRecord(recordId) {
     }
   `;
 
-  const data = await blueGraphql(query, { id: recordId });
+  const data = await blueGraphql(
+    query,
+    { id: recordId },
+    options.projectId ? { projectId: options.projectId } : {}
+  );
   const todo = normalizeTodo(data.todo);
 
   if (!todo) {
@@ -771,7 +774,8 @@ export async function updateRecord(project, input) {
       input: {
         todoId: input.recordId,
         title: input.title || undefined,
-        text: input.description || undefined
+        text: input.description || undefined,
+        html: input.description ? `<p>${escapeHtml(input.description).replaceAll("\n", "<br>")}</p>` : undefined
       }
     },
     { projectId: project.workspaceId }
@@ -780,7 +784,8 @@ export async function updateRecord(project, input) {
   let todo = normalizeTodo(data.editTodo);
 
   if (input.assignees) {
-    todo = (await setTodoAssignees(input.recordId, input.assignees)) || todo;
+    await setTodoAssignees(input.recordId, input.assignees);
+    todo = (await getRecord(input.recordId, { projectId: project.workspaceId })).data || todo;
   }
 
   if (input.tagIds) {
@@ -797,13 +802,11 @@ export async function updateRecord(project, input) {
 export async function moveRecord(project, input) {
   const mutation = `
     mutation MoveRecord($input: MoveTodoInput!) {
-      moveTodo(input: $input) {
-        ${TODO_FIELDS}
-      }
+      moveTodo(input: $input)
     }
   `;
 
-  const data = await blueGraphql(
+  await blueGraphql(
     mutation,
     {
       input: {
@@ -815,7 +818,7 @@ export async function moveRecord(project, input) {
   );
 
   return {
-    data: normalizeTodo(data.moveTodo)
+    data: (await getRecord(input.recordId, { projectId: project.workspaceId })).data
   };
 }
 

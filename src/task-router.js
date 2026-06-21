@@ -41,7 +41,9 @@ const bulkCreateTaskSchema = z.object({
 
 const updateTaskSchema = z.object({
   project: z.string().optional(),
+  projectId: z.string().optional(),
   workspace: z.string().optional(),
+  workspaceId: z.string().optional(),
   recordId: z.string().min(1).optional(),
   taskQuery: z.string().min(1).optional(),
   title: z.string().optional(),
@@ -53,7 +55,9 @@ const updateTaskSchema = z.object({
 
 const moveTaskSchema = z.object({
   project: z.string().optional(),
+  projectId: z.string().optional(),
   workspace: z.string().optional(),
+  workspaceId: z.string().optional(),
   recordId: z.string().min(1).optional(),
   taskQuery: z.string().min(1).optional(),
   list: z.string().optional(),
@@ -62,7 +66,9 @@ const moveTaskSchema = z.object({
 
 const commentTaskSchema = z.object({
   project: z.string().optional(),
+  projectId: z.string().optional(),
   workspace: z.string().optional(),
+  workspaceId: z.string().optional(),
   recordId: z.string().min(1).optional(),
   taskQuery: z.string().min(1).optional(),
   text: z.string().min(1)
@@ -70,7 +76,9 @@ const commentTaskSchema = z.object({
 
 const searchTaskSchema = z.object({
   project: z.string().optional(),
+  projectId: z.string().optional(),
   workspace: z.string().optional(),
+  workspaceId: z.string().optional(),
   query: z.string().min(1),
   assignee: z.string().optional(),
   done: z.boolean().optional(),
@@ -79,14 +87,18 @@ const searchTaskSchema = z.object({
 
 const statusTaskSchema = z.object({
   project: z.string().optional(),
+  projectId: z.string().optional(),
   workspace: z.string().optional(),
+  workspaceId: z.string().optional(),
   recordId: z.string().min(1).optional(),
   taskQuery: z.string().min(1).optional()
 });
 
 const listTaskSchema = z.object({
   project: z.string().optional(),
+  projectId: z.string().optional(),
   workspace: z.string().optional(),
+  workspaceId: z.string().optional(),
   list: z.string().optional(),
   done: z.boolean().optional(),
   assignee: z.string().optional(),
@@ -149,7 +161,9 @@ async function resolveExistingTaskContext(input = {}) {
     throw new Error("Task ID is required.");
   }
 
-  const recordResult = await getRecord(input.recordId);
+  const recordResult = await getRecord(input.recordId, {
+    projectId: input.workspaceId || input.projectId || undefined
+  });
   const record = recordResult.data;
 
   if (!record?.list?.workspaceId) {
@@ -205,6 +219,30 @@ async function resolveTargetContext(input = {}) {
       workspace: {
         id: configuredProject.workspaceId,
         name: configuredProject.name
+      },
+      list
+    };
+  }
+
+  if (input.workspaceId && input.workspace) {
+    const project = {
+      name: input.workspace,
+      company: config.blueDefaultCompany,
+      workspaceId: input.workspaceId,
+      listId: null,
+      defaultAssignees: [],
+      defaultTags: []
+    };
+    const list =
+      input.listId || input.list || input.recordId
+        ? await resolveList(input.workspaceId, input.listId || input.list || null, project)
+        : null;
+
+    return {
+      project,
+      workspace: {
+        id: input.workspaceId,
+        name: input.workspace
       },
       list
     };
@@ -372,7 +410,13 @@ export async function handleCommentTask(input) {
     workspaceId: target.project.workspaceId,
     recordId: parsed.recordId,
     comment: result.data || result.stdout,
-    result: target.record || (await getRecord(parsed.recordId)).data
+    result:
+      target.record ||
+      (
+        await getRecord(parsed.recordId, {
+          projectId: target.project.workspaceId
+        })
+      ).data
   };
 }
 
@@ -405,7 +449,11 @@ export async function handleStatusTask(input) {
     throw new Error("Please select a task first before checking its status.");
   }
 
-  const record = (await getRecord(parsed.recordId)).data;
+  const record = (
+    await getRecord(parsed.recordId, {
+      projectId: parsed.workspaceId || parsed.projectId || undefined
+    })
+  ).data;
 
   return {
     action: "status",
