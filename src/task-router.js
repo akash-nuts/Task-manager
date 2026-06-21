@@ -126,6 +126,7 @@ export function getSlackHelpText() {
     "/blue list tasks in DataCX - Active",
     "/blue list tasks in DataCX - Active: In Progress",
     "/blue list tasks in DataCX - Active | assignee: Akash H",
+    "/blue tasks for Akash H in DataCX - Active",
     "",
     "6. Check task status",
     "/blue status in DataCX - Active: checkout footer",
@@ -154,6 +155,26 @@ function normalizeLookupValue(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+function sortTasksForSlack(tasks = []) {
+  const backlogNames = new Set(["backlog"]);
+
+  return [...tasks].sort((left, right) => {
+    const leftList = normalizeLookupValue(left.list?.name);
+    const rightList = normalizeLookupValue(right.list?.name);
+    const leftIsBacklog = backlogNames.has(leftList);
+    const rightIsBacklog = backlogNames.has(rightList);
+
+    if (leftIsBacklog !== rightIsBacklog) {
+      return leftIsBacklog ? 1 : -1;
+    }
+
+    return (
+      new Date(right.updatedAt || right.createdAt || 0).getTime() -
+      new Date(left.updatedAt || left.createdAt || 0).getTime()
+    );
+  });
 }
 
 async function resolveExistingTaskContext(input = {}) {
@@ -481,6 +502,8 @@ export async function handleListTasks(input = {}) {
     const normalizedList = normalizeLookupValue(parsed.list);
     tasks = tasks.filter((task) => normalizeLookupValue(task.list?.name) === normalizedList);
   }
+
+  tasks = sortTasksForSlack(tasks);
 
   const limit = parsed.limit || 20;
 
@@ -900,6 +923,23 @@ export function parseHumanCommand(text, fallbackWorkspace) {
         workspace,
         list: parsedFilters.primary || undefined,
         assignee: parsedFilters.assignee
+      }
+    };
+  }
+
+  const tasksForMatch = trimmed.match(/^tasks\s+for\s+(.+?)(?:\s+in\s+(.+))?$/i);
+  if (tasksForMatch) {
+    const workspace = tasksForMatch[2]?.trim() || fallbackWorkspace;
+    if (!workspace) {
+      throw new Error("Please choose a workspace. Example: 'tasks for Akash H in DataCX - Active'.");
+    }
+
+    return {
+      action: "list",
+      payload: {
+        workspace,
+        assignee: tasksForMatch[1].trim(),
+        done: false
       }
     };
   }
