@@ -72,6 +72,35 @@ const searchTaskSchema = z.object({
   limit: z.number().int().positive().max(100).optional()
 });
 
+export function getSlackHelpText() {
+  return [
+    "Here are the commands I support:",
+    "",
+    "1. Create a task",
+    "/blue create a task in DataCX - Active | Login breaks on Safari after Google sign-in | Akash H",
+    "",
+    "2. Create a task with explicit title, description, and assignee",
+    "/blue create in DataCX - Active: Login bug | desc: User gets redirected back to login on Safari | assignee: Akash H",
+    "",
+    "3. Bulk create tasks",
+    "/blue bulk create in DataCX - Active: desc: Q3 launch tasks | assignee: Akash H | Fix login timeout ; Add QA checklist ; Review handoff",
+    "",
+    "4. Search tasks",
+    "/blue search in DataCX - Active: onboarding",
+    "",
+    "5. Move a task",
+    "/blue move <taskId> to In Progress",
+    "",
+    "6. Comment on a task",
+    "/blue comment <taskId>: Please prioritize this",
+    "",
+    "Tips:",
+    "- For the short create format, the structure is: workspace | full description | assignee",
+    "- I will generate a shorter title automatically from the description",
+    "- If the workspace name is unclear, I will suggest matching workspaces"
+  ].join("\n");
+}
+
 async function resolveTargetContext(input = {}) {
   const configuredProject =
     getProjectIfConfigured(input.project) ||
@@ -301,10 +330,23 @@ export async function handleListWorkspaceLists(input) {
   };
 }
 
+export async function handleHelp() {
+  return {
+    result: getSlackHelpText()
+  };
+}
+
 export function parseHumanCommand(text, fallbackWorkspace) {
   const trimmed = (text || "").trim();
   if (!trimmed) {
     throw new Error("Command text is empty.");
+  }
+
+  if (/^(help|commands|\?)$/i.test(trimmed)) {
+    return {
+      action: "help",
+      payload: {}
+    };
   }
 
   const normalizedSpaces = trimmed.replace(/\s+/g, " ").trim();
@@ -721,6 +763,8 @@ export async function dispatchHumanCommand(text, fallbackWorkspace) {
 
 export async function dispatchParsedCommand(command) {
   switch (command.action) {
+    case "help":
+      return handleHelp();
     case "create":
       return handleCreateTask(command.payload);
     case "bulk_create":
