@@ -670,7 +670,10 @@ export async function searchRecords(project, queryText, filters = {}) {
     .filter((source) => source?.__typename === "Todo")
     .map(normalizeTodo)
     .filter((todo) => todo?.list?.workspaceId === project.workspaceId)
-    .filter((todo) => (filters.done === undefined ? true : todo.done === filters.done));
+    .filter((todo) => (filters.done === undefined ? true : todo.done === filters.done))
+    .filter((todo) =>
+      !filters.assignee ? true : todo.assignees.some((assignee) => assignee.id === filters.assignee)
+    );
 
   if (apiResults.length > 0) {
     return {
@@ -679,7 +682,8 @@ export async function searchRecords(project, queryText, filters = {}) {
   }
 
   const listResult = await listRecords(project, {
-    done: filters.done
+    done: filters.done,
+    assignee: filters.assignee
   });
 
   const fallbackResults = (Array.isArray(listResult.data) ? listResult.data : [])

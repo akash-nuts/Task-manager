@@ -108,7 +108,7 @@ function taskSummaryLine(task, index) {
   const link = buildBlueTaskUrl(task);
   const assignees = formatAssignees(task.assignees);
 
-  return `${index + 1}. ${task.title} | List: ${task.list?.name || "Unknown"}${
+  return `${index + 1}. ${task.title} | Status: ${task.list?.name || "Unknown"}${
     assignees ? ` | Assignee: ${assignees}` : ""
   }${link ? ` | Link: ${link}` : ""}`;
 }
@@ -181,8 +181,10 @@ function slackResultText(result) {
 
     const header =
       result.action === "search"
-        ? `Top matching tasks in ${workspace} for "${result.query}":`
-        : `Tasks in ${workspace}${list}:`;
+        ? `Top matching tasks in ${workspace} for "${result.query}"${
+            result.assignee ? ` assigned to ${result.assignee}` : ""
+          }:`
+        : `Tasks in ${workspace}${list}${result.assignee ? ` assigned to ${result.assignee}` : ""}:`;
     return [header, ...result.result.map((task, index) => taskSummaryLine(task, index))].join("\n");
   }
 
@@ -591,12 +593,24 @@ app.post("/slack/commands", async (req, res) => {
 
     const params = new URLSearchParams(req.body.toString("utf8"));
     const text = params.get("text") || "";
-    const outcome = await prepareSlackCommandResponse({
-      text,
-      fallbackWorkspace: config.slackDefaultProject
+    const responseUrl = params.get("response_url") || "";
+    const channel = params.get("channel_id") || "";
+    const userId = params.get("user_id") || "";
+
+    res.json({
+      response_type: "ephemeral",
+      text: "Working on it..."
     });
 
-    return res.json(outcome.payload);
+    void processSlackCommand({
+      text,
+      fallbackWorkspace: config.slackDefaultProject,
+      responseUrl,
+      channel,
+      userId
+    });
+
+    return;
   } catch (error) {
     return res.json({
       response_type: "ephemeral",

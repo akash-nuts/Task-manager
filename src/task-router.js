@@ -72,6 +72,7 @@ const searchTaskSchema = z.object({
   project: z.string().optional(),
   workspace: z.string().optional(),
   query: z.string().min(1),
+  assignee: z.string().optional(),
   done: z.boolean().optional(),
   limit: z.number().int().positive().max(100).optional()
 });
@@ -107,10 +108,12 @@ export function getSlackHelpText() {
     "",
     "4. Search tasks",
     "/blue search in DataCX - Active: checkout",
+    "/blue search in DataCX - Active: checkout | assignee: Akash H",
     "",
     "5. List tasks",
     "/blue list tasks in DataCX - Active",
     "/blue list tasks in DataCX - Active: In Progress",
+    "/blue list tasks in DataCX - Active | assignee: Akash H",
     "",
     "6. Check task status",
     "/blue status in DataCX - Active: checkout footer",
@@ -127,6 +130,8 @@ export function getSlackHelpText() {
     "Tips:",
     "- For the short create format, the structure is: workspace | full description | assignee",
     "- I will generate a shorter title automatically from the description",
+    "- Search is case-insensitive and fuzzy, and can match title plus description text",
+    "- You can filter search or list results by assignee",
     "- If a workspace or task name is unclear, I will suggest matches in Slack",
     "- Help and errors stay private, while successful create or update actions can post to the channel"
   ].join("\n");
@@ -374,7 +379,11 @@ export async function handleCommentTask(input) {
 export async function handleSearchTasks(input) {
   const parsed = searchTaskSchema.parse(input);
   const target = await resolveTargetContext(parsed);
+  const assigneeId = parsed.assignee
+    ? (await resolveAssignees(target.project.workspaceId, [parsed.assignee]))[0]?.id
+    : undefined;
   const result = await searchRecords(target.project, parsed.query, {
+    assignee: assigneeId,
     done: parsed.done,
     limit: parsed.limit || 5
   });
@@ -385,6 +394,7 @@ export async function handleSearchTasks(input) {
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
     query: parsed.query,
+    assignee: parsed.assignee,
     result: result.data || result.stdout
   };
 }
@@ -409,9 +419,12 @@ export async function handleStatusTask(input) {
 export async function handleListTasks(input = {}) {
   const parsed = listTaskSchema.parse(input);
   const target = await resolveTargetContext(parsed);
+  const assigneeId = parsed.assignee
+    ? (await resolveAssignees(target.project.workspaceId, [parsed.assignee]))[0]?.id
+    : undefined;
   const result = await listRecords(target.project, {
     done: parsed.done,
-    assignee: parsed.assignee
+    assignee: assigneeId
   });
 
   let tasks = Array.isArray(result.data) ? result.data : [];
@@ -429,6 +442,7 @@ export async function handleListTasks(input = {}) {
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
     list: parsed.list || null,
+    assignee: parsed.assignee,
     result: tasks.slice(0, limit)
   };
 }
@@ -722,6 +736,39 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     return payload;
   }
 
+  function parseSingleAssigneeFilter(rawBody, { allowPrimary = true } = {}) {
+    const segments = String(rawBody || "")
+      .split("|")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    const payload = {};
+    const primary = [];
+
+    for (const segment of segments) {
+      const parsedToken = parseMetadataToken(segment);
+      if (!parsedToken) {
+        if (allowPrimary) {
+          primary.push(segment);
+        }
+        continue;
+      }
+
+      if (parsedToken.key === "assignees") {
+        if (parsedToken.value.length > 1) {
+          throw new Error("Please use one assignee filter at a time for search or list commands.");
+        }
+
+        payload.assignee = parsedToken.value[0];
+      }
+    }
+
+    return {
+      primary: primary.join(" | ").trim(),
+      assignee: payload.assignee
+    };
+  }
+
   function validateCreateRequirements(payload, { bulk = false } = {}) {
     if (!payload.description) {
       throw new Error(
@@ -790,18 +837,21 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
-  const listMatch = trimmed.match(/^list\s+tasks?(?:\s+in\s+(.+?))?(?:\s*:\s*(.+))?$/i);
+  const listMatch = trimmed.match(/^list\s+tasks?(?:\s+in\s+(.+?))?(?:\s*[:|]\s*(.+))?$/i);
   if (listMatch) {
     const workspace = listMatch[1]?.trim() || fallbackWorkspace;
     if (!workspace) {
       throw new Error("Please choose a workspace. Example: 'list tasks in DataCX - Active'.");
     }
 
+    const parsedFilters = parseSingleAssigneeFilter(listMatch[2] || "", { allowPrimary: true });
+
     return {
       action: "list",
       payload: {
         workspace,
-        list: listMatch[2]?.trim() || undefined
+        list: parsedFilters.primary || undefined,
+        assignee: parsedFilters.assignee
       }
     };
   }
@@ -814,11 +864,19 @@ export function parseHumanCommand(text, fallbackWorkspace) {
       );
     }
 
+    const parsedFilters = parseSingleAssigneeFilter(searchMatch[2], { allowPrimary: true });
+    if (!parsedFilters.primary) {
+      throw new Error(
+        "Please include a search term. Example: 'search in DataCX - Active: checkout | assignee: Akash H'."
+      );
+    }
+
     return {
       action: "search",
       payload: {
         workspace: searchMatch[1]?.trim() || fallbackWorkspace,
-        query: searchMatch[2].trim()
+        query: parsedFilters.primary,
+        assignee: parsedFilters.assignee
       }
     };
   }
