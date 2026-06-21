@@ -116,7 +116,7 @@ function fromSlackJson(value) {
 }
 
 function isPublicSuccessAction(action) {
-  return ["create", "bulk_create", "update", "move", "comment"].includes(action);
+  return ["create", "bulk_create", "bulk_import", "update", "move", "comment"].includes(action);
 }
 
 function taskSummaryLine(task, index, { includeWorkspace = false } = {}) {
@@ -240,6 +240,25 @@ function slackResultText(result) {
     const items = result.result?.created || [];
     const lines = [`Created ${result.result.createdCount} tasks successfully in ${workspace}${list}.`];
     items.forEach((task, index) => lines.push(taskSummaryLine(task, index)));
+    return lines.join("\n");
+  }
+
+  if (result.action === "bulk_import") {
+    const items = result.result?.created || [];
+    const errors = result.result?.errors || [];
+    const lines = [
+      `Imported ${result.result.createdCount} tasks into ${workspace}${list}.${errors.length ? ` ${errors.length} rows failed.` : ""}`
+    ];
+
+    items.slice(0, 10).forEach((task, index) => lines.push(taskSummaryLine(task, index)));
+
+    if (errors.length) {
+      lines.push("Errors:");
+      errors.slice(0, 10).forEach((error) => {
+        lines.push(`Row ${error.rowNumber} (${error.title}): ${error.message}`);
+      });
+    }
+
     return lines.join("\n");
   }
 

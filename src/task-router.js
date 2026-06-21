@@ -39,6 +39,19 @@ const bulkCreateTaskSchema = z.object({
   listId: z.string().optional()
 });
 
+const importTaskRowSchema = z.object({
+  title: z.string().min(1),
+  description: z.string().optional(),
+  assignee: z.string().optional(),
+  list: z.string().optional()
+});
+
+const bulkImportTaskSchema = z.object({
+  project: z.string().optional(),
+  workspace: z.string().optional(),
+  rows: z.array(importTaskRowSchema).min(1).max(200)
+});
+
 const updateTaskSchema = z.object({
   project: z.string().optional(),
   projectId: z.string().optional(),
@@ -118,6 +131,7 @@ export function getSlackHelpText() {
     "",
     "3. Bulk create tasks",
     "/blue bulk create in DataCX - Active: desc: Sprint intake | assignee: Akash H | Fix login ; Add QA checklist ; Review handoff",
+    "/blue import tasks in DataCX - Active: <paste Excel rows with Features, Description, POC, Status>",
     "",
     "4. Search tasks",
     "/blue search in DataCX - Active: checkout",
@@ -367,6 +381,56 @@ export async function handleBulkCreateTask(input) {
     result: {
       createdCount: created.length,
       created
+    }
+  };
+}
+
+export async function handleBulkImportTask(input) {
+  const parsed = bulkImportTaskSchema.parse(input);
+  const target = await resolveTargetContext(parsed);
+  const defaultList = await resolveList(target.project.workspaceId, null, target.project);
+  const created = [];
+  const errors = [];
+
+  for (let index = 0; index < parsed.rows.length; index += 1) {
+    const row = parsed.rows[index];
+
+    try {
+      const assigneeIds = row.assignee
+        ? (await resolveAssignees(target.project.workspaceId, [row.assignee])).map((user) => user.id)
+        : [];
+      const list = row.list
+        ? await resolveList(target.project.workspaceId, row.list, target.project)
+        : defaultList;
+      const result = await createRecord(target.project, {
+        title: row.title,
+        description: row.description || "",
+        assignees: assigneeIds,
+        listId: list.id,
+        tagIds: target.project.defaultTags
+      });
+
+      created.push(result.data || result.stdout);
+    } catch (error) {
+      errors.push({
+        rowNumber: index + 2,
+        title: row.title,
+        message: error.message
+      });
+    }
+  }
+
+  return {
+    action: "bulk_import",
+    project: target.project.name,
+    workspace: target.workspace.name,
+    workspaceId: target.project.workspaceId,
+    list: defaultList.name,
+    result: {
+      createdCount: created.length,
+      errorCount: errors.length,
+      created,
+      errors
     }
   };
 }
@@ -864,6 +928,92 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
+  function parseDelimitedTable(rawBody, delimiter = "\t") {
+    const text = String(rawBody || "").replace(/\r\n/g, "\n");
+    const rows = [];
+    let row = [];
+    let cell = "";
+    let inQuotes = false;
+
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      const next = text[index + 1];
+
+      if (char === '"') {
+        if (inQuotes && next === '"') {
+          cell += '"';
+          index += 1;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+
+      if (!inQuotes && char === delimiter) {
+        row.push(cell);
+        cell = "";
+        continue;
+      }
+
+      if (!inQuotes && char === "\n") {
+        row.push(cell);
+        rows.push(row);
+        row = [];
+        cell = "";
+        continue;
+      }
+
+      cell += char;
+    }
+
+    row.push(cell);
+    if (row.some((value) => String(value || "").trim())) {
+      rows.push(row);
+    }
+
+    return rows;
+  }
+
+  function normalizeHeaderName(value) {
+    return normalizeLookupValue(value).replace(/\s+/g, "");
+  }
+
+  function parseImportBody(rawBody) {
+    const rows = parseDelimitedTable(rawBody, "\t").filter((row) =>
+      row.some((cell) => String(cell || "").trim())
+    );
+
+    if (rows.length < 2) {
+      throw new Error(
+        "Import needs a header row and at least one task row. Paste the Excel rows including headers like Features, Description, POC, Status."
+      );
+    }
+
+    const headers = rows[0].map((cell) => normalizeHeaderName(cell));
+    const titleIndex = headers.findIndex((header) => ["features", "title", "task", "tasktitle"].includes(header));
+    const descriptionIndex = headers.findIndex((header) =>
+      ["description", "desc", "details"].includes(header)
+    );
+    const assigneeIndex = headers.findIndex((header) =>
+      ["poc", "assignee", "owner"].includes(header)
+    );
+    const listIndex = headers.findIndex((header) => ["status", "list", "column"].includes(header));
+
+    if (titleIndex === -1) {
+      throw new Error("Import requires a title column such as Features or Title.");
+    }
+
+    return rows
+      .slice(1)
+      .map((row) => ({
+        title: String(row[titleIndex] || "").trim(),
+        description: descriptionIndex === -1 ? "" : String(row[descriptionIndex] || "").trim(),
+        assignee: assigneeIndex === -1 ? "" : String(row[assigneeIndex] || "").trim(),
+        list: listIndex === -1 ? "" : String(row[listIndex] || "").trim()
+      }))
+      .filter((row) => row.title);
+  }
+
   function parseUpdateSegments(rawBody) {
     const segments = String(rawBody || "")
       .split("|")
@@ -955,6 +1105,24 @@ export function parseHumanCommand(text, fallbackWorkspace) {
       payload: {
         workspace: bulkCreateMatch[1]?.trim() || fallbackWorkspace,
         ...parsedBody
+      }
+    };
+  }
+
+  const importMatch = trimmed.match(/^(?:import\s+tasks|bulk\s+import)(?:\s+in\s+(.+?))?\s*:\s*([\s\S]+)$/i);
+  if (importMatch) {
+    const workspace = importMatch[1]?.trim() || fallbackWorkspace;
+    if (!workspace) {
+      throw new Error(
+        "Please choose a workspace in the import command. Example: 'import tasks in datacx: <paste rows>'."
+      );
+    }
+
+    return {
+      action: "bulk_import",
+      payload: {
+        workspace,
+        rows: parseImportBody(importMatch[2])
       }
     };
   }
@@ -1180,6 +1348,8 @@ export async function dispatchParsedCommand(command) {
       return handleCreateTask(command.payload);
     case "bulk_create":
       return handleBulkCreateTask(command.payload);
+    case "bulk_import":
+      return handleBulkImportTask(command.payload);
     case "comment":
       return handleCommentTask(command.payload);
     case "move":
