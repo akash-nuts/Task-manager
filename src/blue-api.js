@@ -617,7 +617,7 @@ export async function listRecords(project, filters = {}) {
       todoLists(projectId: $projectId) {
         id
         title
-        todos(done: $done, assigneeIds: $assigneeIds, first: $first, orderBy: position) {
+        todos(done: $done, assigneeIds: $assigneeIds, first: $first, orderBy: position_ASC) {
           ${TODO_FIELDS}
         }
       }
