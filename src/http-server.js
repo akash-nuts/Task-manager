@@ -85,24 +85,27 @@ function formatAssignees(assignees = []) {
     .join(", ");
 }
 
-function buildBlueTaskUrl(task) {
+function buildBlueTaskUrl(task, options = {}) {
   if (!task) {
     return null;
   }
 
+  const workspaceSlug = task.list?.workspaceSlug || options.workspaceSlug || "";
+  const workspaceId = task.list?.workspaceId || options.workspaceId || "";
+
   if (!config.blueTaskUrlTemplate) {
-    if (!task.list?.workspaceSlug || !task.id) {
+    if (!workspaceSlug || !task.id) {
       return null;
     }
 
-    return `${config.blueWebBaseUrl}/org/${config.blueCompanyId}/workspace/${task.list.workspaceSlug}/records/board/${task.id}`;
+    return `${config.blueWebBaseUrl}/org/${config.blueCompanyId}/workspace/${workspaceSlug}/records/board/${task.id}`;
   }
 
   return config.blueTaskUrlTemplate
     .replaceAll("{baseUrl}", config.blueWebBaseUrl)
     .replaceAll("{companyId}", config.blueCompanyId)
-    .replaceAll("{workspaceSlug}", task.list?.workspaceSlug || "")
-    .replaceAll("{workspaceId}", task.list?.workspaceId || "")
+    .replaceAll("{workspaceSlug}", workspaceSlug)
+    .replaceAll("{workspaceId}", workspaceId)
     .replaceAll("{taskUid}", task.uid || "")
     .replaceAll("{taskId}", task.id || "");
 }
@@ -119,8 +122,8 @@ function isPublicSuccessAction(action) {
   return ["create", "bulk_create", "bulk_import", "update", "move", "comment"].includes(action);
 }
 
-function taskSummaryLine(task, index, { includeWorkspace = false } = {}) {
-  const link = buildBlueTaskUrl(task);
+function taskSummaryLine(task, index, { includeWorkspace = false, workspaceSlug = "", workspaceId = "" } = {}) {
+  const link = buildBlueTaskUrl(task, { workspaceSlug, workspaceId });
   const assignees = formatAssignees(task.assignees);
 
   return `${index + 1}. ${task.title}${includeWorkspace ? ` | Workspace: ${task.list?.workspace || "Unknown"}` : ""} | Status: ${task.list?.name || "Unknown"}${
@@ -166,7 +169,10 @@ function buildInteractiveTaskBlocks(result, channelId, userId) {
   ];
 
   tasks.slice(0, 5).forEach((task, index) => {
-    const link = buildBlueTaskUrl(task);
+    const link = buildBlueTaskUrl(task, {
+      workspaceSlug: result.workspaceSlug,
+      workspaceId: result.workspaceId
+    });
     const assignees = formatAssignees(task.assignees) || "Unassigned";
 
     blocks.push({
@@ -239,7 +245,9 @@ function slackResultText(result) {
   if (result.action === "bulk_create") {
     const items = result.result?.created || [];
     const lines = [`Created ${result.result.createdCount} tasks successfully in ${workspace}${list}.`];
-    items.forEach((task, index) => lines.push(taskSummaryLine(task, index)));
+    items.forEach((task, index) =>
+      lines.push(taskSummaryLine(task, index, { workspaceSlug: result.workspaceSlug, workspaceId: result.workspaceId }))
+    );
     return lines.join("\n");
   }
 
@@ -251,7 +259,9 @@ function slackResultText(result) {
       `Imported ${result.result.createdCount} tasks into ${workspace}${list}.${warnings.length ? ` ${warnings.length} warnings.` : ""}${errors.length ? ` ${errors.length} rows failed.` : ""}`
     ];
 
-    items.slice(0, 10).forEach((task, index) => lines.push(taskSummaryLine(task, index)));
+    items.slice(0, 10).forEach((task, index) =>
+      lines.push(taskSummaryLine(task, index, { workspaceSlug: result.workspaceSlug, workspaceId: result.workspaceId }))
+    );
 
     if (warnings.length) {
       lines.push("Warnings:");
@@ -271,7 +281,10 @@ function slackResultText(result) {
   }
 
   if (["create", "update", "move"].includes(result.action) && result.result?.title) {
-    const link = buildBlueTaskUrl(result.result);
+    const link = buildBlueTaskUrl(result.result, {
+      workspaceSlug: result.workspaceSlug,
+      workspaceId: result.workspaceId
+    });
     const assignees = formatAssignees(result.result.assignees);
     const actionLabel =
       result.action === "create"
@@ -291,7 +304,10 @@ function slackResultText(result) {
   }
 
   if (result.action === "comment" && result.result?.title) {
-    const link = buildBlueTaskUrl(result.result);
+    const link = buildBlueTaskUrl(result.result, {
+      workspaceSlug: result.workspaceSlug,
+      workspaceId: result.workspaceId
+    });
     return [
       `Added a comment to "${result.result.title}" in ${workspace}.`,
       link ? `Link: ${link}` : null
@@ -302,7 +318,10 @@ function slackResultText(result) {
 
   if (result.action === "status" && result.result?.title) {
     const task = result.result;
-    const link = buildBlueTaskUrl(task);
+    const link = buildBlueTaskUrl(task, {
+      workspaceSlug: result.workspaceSlug,
+      workspaceId: result.workspaceId
+    });
     const assignees = formatAssignees(task.assignees);
     return [
       `"${task.title}" is currently in ${task.list?.name || "Unknown"} in ${workspace}.`,
@@ -334,7 +353,11 @@ function slackResultText(result) {
     return [
       header,
       ...result.result.map((task, index) =>
-        taskSummaryLine(task, index, { includeWorkspace: Boolean(result.allWorkspaces) })
+        taskSummaryLine(task, index, {
+          includeWorkspace: Boolean(result.allWorkspaces),
+          workspaceSlug: result.workspaceSlug,
+          workspaceId: result.workspaceId
+        })
       )
     ].join("\n");
   }

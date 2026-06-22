@@ -200,6 +200,38 @@ function sortTasksForSlack(tasks = []) {
   });
 }
 
+async function resolveWorkspaceById(workspaceId) {
+  if (!workspaceId) {
+    return null;
+  }
+
+  try {
+    return await resolveWorkspace(workspaceId);
+  } catch {
+    return null;
+  }
+}
+
+function withWorkspaceSlug(task, workspace) {
+  if (!task || task.list?.workspaceSlug || !workspace?.slug) {
+    return task;
+  }
+
+  return {
+    ...task,
+    list: task.list
+      ? {
+          ...task.list,
+          workspaceSlug: workspace.slug
+        }
+      : task.list
+  };
+}
+
+function withWorkspaceSlugForTasks(tasks = [], workspace) {
+  return Array.isArray(tasks) ? tasks.map((task) => withWorkspaceSlug(task, workspace)) : tasks;
+}
+
 async function resolveExistingTaskContext(input = {}) {
   if (!input.recordId) {
     throw new Error("Task ID is required.");
@@ -232,10 +264,13 @@ async function resolveExistingTaskContext(input = {}) {
     },
     workspace: {
       id: record.list.workspaceId,
-      name: record.list.workspace || input.workspace || "Blue"
+      name: record.list.workspace || input.workspace || "Blue",
+      slug: record.list.workspaceSlug || ""
     },
     list,
-    record
+    record: withWorkspaceSlug(record, {
+      slug: record.list.workspaceSlug || ""
+    })
   };
 }
 
@@ -247,6 +282,7 @@ async function resolveTargetContext(input = {}) {
       : null);
 
   if (configuredProject) {
+    const workspace = await resolveWorkspaceById(configuredProject.workspaceId);
     const list =
       input.listId || input.list
         ? await resolveList(
@@ -262,15 +298,17 @@ async function resolveTargetContext(input = {}) {
       project: configuredProject,
       workspace: {
         id: configuredProject.workspaceId,
-        name: configuredProject.name
+        name: workspace?.name || configuredProject.name,
+        slug: workspace?.slug || ""
       },
       list
     };
   }
 
   if (input.workspaceId && input.workspace) {
+    const workspace = await resolveWorkspaceById(input.workspaceId);
     const project = {
-      name: input.workspace,
+      name: workspace?.name || input.workspace,
       company: config.blueDefaultCompany,
       workspaceId: input.workspaceId,
       listId: null,
@@ -286,7 +324,8 @@ async function resolveTargetContext(input = {}) {
       project,
       workspace: {
         id: input.workspaceId,
-        name: input.workspace
+        name: workspace?.name || input.workspace,
+        slug: workspace?.slug || ""
       },
       list
     };
@@ -353,8 +392,9 @@ export async function handleCreateTask(input) {
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
+    workspaceSlug: target.workspace.slug || "",
     list: list.name,
-    result: result.data || result.stdout
+    result: withWorkspaceSlug(result.data || result.stdout, target.workspace)
   };
 }
 
@@ -383,10 +423,11 @@ export async function handleBulkCreateTask(input) {
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
+    workspaceSlug: target.workspace.slug || "",
     list: list.name,
     result: {
       createdCount: created.length,
-      created
+      created: withWorkspaceSlugForTasks(created, target.workspace)
     }
   };
 }
@@ -445,12 +486,13 @@ export async function handleBulkImportTask(input) {
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
+    workspaceSlug: target.workspace.slug || "",
     list: defaultList.name,
     result: {
       createdCount: created.length,
       errorCount: errors.length,
       warningCount: warnings.length,
-      created,
+      created: withWorkspaceSlugForTasks(created, target.workspace),
       errors,
       warnings
     }
@@ -477,7 +519,8 @@ export async function handleUpdateTask(input) {
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
-    result: result.data || result.stdout
+    workspaceSlug: target.workspace.slug || "",
+    result: withWorkspaceSlug(result.data || result.stdout, target.workspace)
   };
 }
 
@@ -499,8 +542,9 @@ export async function handleMoveTask(input) {
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
+    workspaceSlug: target.workspace.slug || "",
     list: list.name,
-    result: result.data || result.stdout
+    result: withWorkspaceSlug(result.data || result.stdout, target.workspace)
   };
 }
 
@@ -518,15 +562,18 @@ export async function handleCommentTask(input) {
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
+    workspaceSlug: target.workspace.slug || "",
     recordId: parsed.recordId,
     comment: result.data || result.stdout,
-    result:
+    result: withWorkspaceSlug(
       target.record ||
-      (
-        await getRecord(parsed.recordId, {
-          projectId: target.project.workspaceId
-        })
-      ).data
+        (
+          await getRecord(parsed.recordId, {
+            projectId: target.project.workspaceId
+          })
+        ).data,
+      target.workspace
+    )
   };
 }
 
@@ -547,9 +594,10 @@ export async function handleSearchTasks(input) {
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
+    workspaceSlug: target.workspace.slug || "",
     query: parsed.query,
     assignee: parsed.assignee,
-    result: result.data || result.stdout
+    result: withWorkspaceSlugForTasks(result.data || result.stdout, target.workspace)
   };
 }
 
@@ -570,6 +618,7 @@ export async function handleStatusTask(input) {
     project: record.list?.workspace || parsed.workspace || "Blue",
     workspace: record.list?.workspace || parsed.workspace || "Blue",
     workspaceId: record.list?.workspaceId || "",
+    workspaceSlug: record.list?.workspaceSlug || "",
     result: record
   };
 }
@@ -647,6 +696,8 @@ export async function handleListTasks(input = {}) {
       action: "list",
       project: "All Workspaces",
       workspace: "All Workspaces",
+      workspaceId: "",
+      workspaceSlug: "",
       allWorkspaces: true,
       list: parsed.list || null,
       assignee: parsed.assignee,
@@ -680,9 +731,10 @@ export async function handleListTasks(input = {}) {
     project: target.project.name,
     workspace: target.workspace.name,
     workspaceId: target.project.workspaceId,
+    workspaceSlug: target.workspace.slug || "",
     list: parsed.list || null,
     assignee: parsed.assignee,
-    result: tasks.slice(0, limit)
+    result: withWorkspaceSlugForTasks(tasks.slice(0, limit), target.workspace)
   };
 }
 
