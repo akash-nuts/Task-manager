@@ -51,8 +51,18 @@ export const config = {
   slackBotToken: process.env.SLACK_BOT_TOKEN || "",
   slackDefaultProject: process.env.SLACK_DEFAULT_PROJECT || "",
   slackCommandName: process.env.SLACK_COMMAND_NAME || "/blue",
+  slackSummaryChannelId: process.env.SLACK_SUMMARY_CHANNEL_ID || "",
   emailSharedSecret: process.env.EMAIL_SHARED_SECRET || "",
-  emailDefaultProject: process.env.EMAIL_DEFAULT_PROJECT || ""
+  emailDefaultProject: process.env.EMAIL_DEFAULT_PROJECT || "",
+  blueWebhookSecret: process.env.BLUE_WEBHOOK_SECRET || "",
+  cronSecret: process.env.CRON_SECRET || "",
+  kvRestApiUrl: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || "",
+  kvRestApiToken: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || "",
+  summaryRetentionHours: Number(process.env.SUMMARY_RETENTION_HOURS || 36),
+  summaryWindowHours: Number(process.env.SUMMARY_WINDOW_HOURS || 24),
+  summaryInProgressLists: process.env.SUMMARY_IN_PROGRESS_LISTS || "In Progress",
+  summaryTodoLists: process.env.SUMMARY_TODO_LISTS || "To do,Todo,Backlog",
+  summaryWorkspaceRefs: process.env.SUMMARY_WORKSPACES || ""
 };
 
 export function getProject(projectName) {

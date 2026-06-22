@@ -3,6 +3,8 @@ import express from "express";
 import { waitUntil } from "@vercel/functions";
 import { config } from "./config.js";
 import { findWorkspaceMatches, getRecord, listLists, searchRecords } from "./blue-api.js";
+import { buildDailySummary } from "./summary-service.js";
+import { addSummaryEvent, isSummaryStoreConfigured } from "./summary-store.js";
 import { dispatchHumanCommand, dispatchParsedCommand, parseHumanCommand } from "./task-router.js";
 
 const app = express();
@@ -32,6 +34,8 @@ app.get("/routes", (_req, res) => {
       slackEvents: "/slack/events",
       slackCommands: "/slack/commands",
       slackInteractions: "/slack/interactions",
+      blueWebhook: "/blue/webhooks",
+      dailySummary: "/cron/daily-summary",
       emailInbound: "/email/inbound"
     }
   });
@@ -116,6 +120,147 @@ function toSlackJson(value) {
 
 function fromSlackJson(value) {
   return JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8"));
+}
+
+function parseSharedSecret(req, headerName) {
+  const authHeader = req.header("authorization") || "";
+  const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  return (
+    req.header(headerName) ||
+    req.query?.secret ||
+    req.body?.secret ||
+    bearerMatch?.[1] ||
+    ""
+  );
+}
+
+function verifySharedSecret(req, expectedSecret, headerName) {
+  if (!expectedSecret) {
+    return true;
+  }
+
+  const providedSecret = parseSharedSecret(req, headerName);
+  return providedSecret === expectedSecret;
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value === 0) {
+      return value;
+    }
+
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return value;
+    }
+  }
+
+  return "";
+}
+
+function normalizeBlueWebhookPayload(body = {}) {
+  const payload = body?.data || body?.record || body?.todo || body;
+  const taskPayload =
+    payload?.record ||
+    payload?.todo ||
+    payload?.task ||
+    payload?.data?.record ||
+    payload?.data?.todo ||
+    body?.record ||
+    body?.todo ||
+    body?.task ||
+    null;
+
+  const currentList =
+    taskPayload?.list?.name ||
+    taskPayload?.todoList?.title ||
+    payload?.list?.name ||
+    body?.list?.name ||
+    "";
+  const fromList =
+    firstNonEmpty(
+      body?.fromList?.name,
+      body?.fromListName,
+      body?.previousList?.name,
+      body?.oldList?.name,
+      payload?.fromList?.name,
+      payload?.previousList?.name,
+      taskPayload?.fromList?.name
+    ) || "";
+  const toList =
+    firstNonEmpty(
+      body?.toList?.name,
+      body?.toListName,
+      body?.newList?.name,
+      payload?.toList?.name,
+      payload?.newList?.name,
+      taskPayload?.toList?.name,
+      currentList
+    ) || "";
+
+  return {
+    eventType: firstNonEmpty(body?.eventType, body?.type, body?.trigger, body?.event, payload?.eventType) || "blue_event",
+    taskId: firstNonEmpty(
+      taskPayload?.id,
+      taskPayload?._id,
+      payload?.recordId,
+      payload?.todoId,
+      body?.recordId,
+      body?.todoId,
+      body?.taskId
+    ),
+    taskTitle: firstNonEmpty(taskPayload?.title, payload?.title, body?.title),
+    workspaceId: firstNonEmpty(
+      taskPayload?.list?.workspaceId,
+      taskPayload?.todoList?.project?.id,
+      payload?.workspaceId,
+      body?.workspaceId,
+      body?.projectId
+    ),
+    workspaceName: firstNonEmpty(
+      taskPayload?.list?.workspace,
+      taskPayload?.todoList?.project?.name,
+      payload?.workspaceName,
+      body?.workspaceName
+    ),
+    workspaceSlug: firstNonEmpty(
+      taskPayload?.list?.workspaceSlug,
+      taskPayload?.todoList?.project?.slug,
+      payload?.workspaceSlug,
+      body?.workspaceSlug
+    ),
+    fromList,
+    toList,
+    occurredAt: new Date(
+      firstNonEmpty(body?.occurredAt, body?.createdAt, body?.timestamp, payload?.createdAt, Date.now())
+    ).getTime()
+  };
+}
+
+async function enrichSummaryEvent(event) {
+  if (!event?.taskId) {
+    return event;
+  }
+
+  try {
+    const record = (
+      await getRecord(event.taskId, {
+        projectId: event.workspaceId || undefined
+      })
+    ).data;
+
+    return {
+      ...event,
+      taskTitle: event.taskTitle || record?.title || "",
+      workspaceId: event.workspaceId || record?.list?.workspaceId || "",
+      workspaceName: event.workspaceName || record?.list?.workspace || "",
+      workspaceSlug: event.workspaceSlug || record?.list?.workspaceSlug || "",
+      toList: event.toList || record?.list?.name || "",
+      assignees: Array.isArray(record?.assignees) ? record.assignees : []
+    };
+  } catch (error) {
+    console.warn("Failed to enrich Blue summary event:", error.message);
+    return event;
+  }
 }
 
 function isPublicSuccessAction(action) {
@@ -959,6 +1104,8 @@ async function processSlackCommand({ text, fallbackWorkspace, channel, threadTs,
 
 app.use("/email/inbound", express.json());
 app.use("/email/inbound", express.urlencoded({ extended: true }));
+app.use("/blue/webhooks", express.json());
+app.use("/blue/webhooks", express.urlencoded({ extended: true }));
 
 app.post("/email/inbound", async (req, res) => {
   try {
@@ -982,6 +1129,75 @@ app.post("/email/inbound", async (req, res) => {
     return res.status(400).json({ ok: false, error: error.message });
   }
 });
+
+app.post("/blue/webhooks", async (req, res) => {
+  try {
+    if (!verifySharedSecret(req, config.blueWebhookSecret, "x-blue-webhook-secret")) {
+      return res.status(401).json({ ok: false, error: "Invalid Blue webhook secret" });
+    }
+
+    if (!isSummaryStoreConfigured()) {
+      return res.status(503).json({
+        ok: false,
+        error: "Summary storage is not configured. Set KV_REST_API_URL and KV_REST_API_TOKEN."
+      });
+    }
+
+    const normalizedEvent = normalizeBlueWebhookPayload(req.body || {});
+    const event = await enrichSummaryEvent(normalizedEvent);
+
+    if (!event.taskId && !event.workspaceId) {
+      return res.status(400).json({
+        ok: false,
+        error: "Webhook payload did not include a task or workspace identifier."
+      });
+    }
+
+    const stored = await addSummaryEvent(event);
+    return res.json({
+      ok: true,
+      stored,
+      event
+    });
+  } catch (error) {
+    return res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+async function runDailySummary(req, res) {
+  try {
+    if (!verifySharedSecret(req, config.cronSecret, "x-cron-secret")) {
+      return res.status(401).json({ ok: false, error: "Invalid cron secret" });
+    }
+
+    const summary = await buildDailySummary();
+    const dryRun = String(req.query?.dryRun || req.body?.dryRun || "").toLowerCase() === "1";
+
+    if (!dryRun) {
+      if (!config.slackSummaryChannelId) {
+        throw new Error("Missing SLACK_SUMMARY_CHANNEL_ID.");
+      }
+
+      if (!config.slackBotToken) {
+        throw new Error("Missing SLACK_BOT_TOKEN.");
+      }
+
+      await postSlackMessage(config.slackSummaryChannelId, summary.text);
+    }
+
+    return res.json({
+      ok: true,
+      dryRun,
+      posted: !dryRun,
+      ...summary
+    });
+  } catch (error) {
+    return res.status(400).json({ ok: false, error: error.message });
+  }
+}
+
+app.get("/cron/daily-summary", runDailySummary);
+app.post("/cron/daily-summary", express.json(), runDailySummary);
 
 app.use("/slack/events", express.raw({ type: "application/json" }));
 app.use("/slack/commands", express.raw({ type: "application/x-www-form-urlencoded" }));

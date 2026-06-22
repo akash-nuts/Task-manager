@@ -12,7 +12,7 @@
     "start:mcp": "node src/mcp-server.js",
     "start:http": "node src/http-server.js",
     "start:replit": "node src/http-server.js",
-    "check": "node --check src/index.js && node --check src/mcp-server.js && node --check src/http-server.js && node --check src/blue-api.js && node --check src/task-router.js && node --check src/config.js"
+    "check": "node --check src/index.js && node --check src/mcp-server.js && node --check src/http-server.js && node --check src/blue-api.js && node --check src/task-router.js && node --check src/config.js && node --check src/summary-store.js && node --check src/summary-service.js"
   },
   "dependencies": {
     "@cfworker/json-schema": "^4.1.1",

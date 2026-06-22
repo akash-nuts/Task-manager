@@ -5,6 +5,12 @@
       "runtime": "@vercel/node@5.3.24"
     }
   },
+  "crons": [
+    {
+      "path": "/cron/daily-summary",
+      "schedule": "30 12 * * *"
+    }
+  ],
   "routes": [
     {
       "src": "/(.*)",

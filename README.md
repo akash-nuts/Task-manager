@@ -110,7 +110,12 @@ Set these Vercel Environment Variables:
 - `SLACK_SIGNING_SECRET`
 - `SLACK_BOT_TOKEN`
 - `SLACK_COMMAND_NAME`
+- `SLACK_SUMMARY_CHANNEL_ID`
 - `EMAIL_SHARED_SECRET`
+- `BLUE_WEBHOOK_SECRET`
+- `CRON_SECRET`
+- `KV_REST_API_URL`
+- `KV_REST_API_TOKEN`
 - `HTTP_PORT`
 
 Recommended values:
@@ -125,8 +130,64 @@ After deployment, use your Vercel domain for:
 
 - `https://your-app.vercel.app/slack/events`
 - `https://your-app.vercel.app/slack/commands`
+- `https://your-app.vercel.app/blue/webhooks`
+- `https://your-app.vercel.app/cron/daily-summary`
 - `https://your-app.vercel.app/email/inbound`
 - `https://your-app.vercel.app/health`
+
+## Daily Slack Summary
+
+This version supports a single Slack summary channel with the digest grouped by Blue workspace.
+
+Required env vars:
+
+- `SLACK_SUMMARY_CHANNEL_ID`
+- `BLUE_WEBHOOK_SECRET`
+- `CRON_SECRET`
+- `KV_REST_API_URL`
+- `KV_REST_API_TOKEN`
+
+Optional env vars:
+
+- `SUMMARY_RETENTION_HOURS`
+- `SUMMARY_WINDOW_HOURS`
+- `SUMMARY_IN_PROGRESS_LISTS`
+- `SUMMARY_TODO_LISTS`
+- `SUMMARY_WORKSPACES`
+
+Default behavior:
+
+- Blue webhook events are stored temporarily for `36` hours
+- The digest looks back `24` hours
+- Current `In Progress` tasks are listed per workspace
+- Tasks moved beyond `To do` are listed per workspace
+
+Vercel cron:
+
+- `vercel.json` is set to call `/cron/daily-summary` daily at `12:30 UTC`
+- That equals `6:00 PM IST`
+
+Blue webhook endpoint:
+
+```text
+POST /blue/webhooks
+```
+
+Protect it with either:
+
+- header `x-blue-webhook-secret: <BLUE_WEBHOOK_SECRET>`
+- or `Authorization: Bearer <BLUE_WEBHOOK_SECRET>`
+
+Manual summary test:
+
+```text
+GET /cron/daily-summary?dryRun=1
+```
+
+Protect it with either:
+
+- header `x-cron-secret: <CRON_SECRET>`
+- or `Authorization: Bearer <CRON_SECRET>`
 
 Slack setup after deployment:
 
