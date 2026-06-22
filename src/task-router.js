@@ -124,22 +124,24 @@ export function getSlackHelpText() {
     "Here are the commands I support:",
     "",
     "1. Create a task",
-    "/blue create a task in DataCX - Active | Checkout button overlaps footer on mobile Safari | Akash H",
+    "/blue create in DataCX - Active: Checkout footer bug | Checkout button overlaps footer on mobile Safari | Akash H",
     "",
-    "2. Create a task with explicit title, description, and assignee",
-    "/blue create in DataCX - Active: Checkout footer bug | desc: Checkout button overlaps footer on mobile Safari | assignee: Akash H",
+    "2. Bulk create tasks",
+    "/blue bulk create in DataCX - Active:",
+    "Checkout footer bug | Checkout button overlaps footer on mobile Safari | Akash H",
+    "Login bug | User gets redirected back to login on Safari | Kunal",
     "",
-    "3. Bulk create tasks",
+    "3. Bulk create with shared description and assignee",
     "/blue bulk create in DataCX - Active: desc: Sprint intake | assignee: Akash H | Fix login ; Add QA checklist ; Review handoff",
-    "/blue bulk import tasks in DataCX - Active:",
-    "Task title | Description | Assignee",
-    "Another task | Description | Assignee",
     "",
-    "4. Search tasks",
+    "4. Bulk create with shared assignee and description-derived titles",
+    "/blue create in DataCX - Active: Akash H | Fix login timeout on Safari ; Add QA checklist ; Review handoff",
+    "",
+    "5. Search tasks",
     "/blue search in DataCX - Active: checkout",
     "/blue search in DataCX - Active: checkout | assignee: Akash H",
     "",
-    "5. List tasks",
+    "6. List tasks",
     "/blue list tasks in DataCX - Active",
     "/blue list tasks in DataCX - Active: In Progress",
     "/blue list tasks in DataCX - Active | assignee: Akash H",
@@ -147,21 +149,23 @@ export function getSlackHelpText() {
     "/blue tasks for Akash H in DataCX - Active: QA",
     "/blue tasks for Akash H in all workspaces",
     "",
-    "6. Check task status",
+    "7. Check task status",
     "/blue status in DataCX - Active: checkout footer",
     "",
-    "7. Update a task",
+    "8. Update a task",
     "/blue update in DataCX - Active: checkout footer | desc: Repro on iPhone 14 Safari | assignee: Akash H",
     "",
-    "8. Move a task",
+    "9. Move a task",
     "/blue move in DataCX - Active: checkout footer | QA",
     "",
-    "9. Comment on a task",
+    "10. Comment on a task",
     "/blue comment in DataCX - Active: checkout footer | Please verify on iPhone 14",
     "",
     "Tips:",
-    "- For the short create format, the structure is: workspace | full description | assignee",
-    "- I will generate a shorter title automatically from the description",
+    "- Preferred single create format: create in <project>: title | description | assignee",
+    "- Preferred bulk create format: bulk create in <project>: one task per line as title | description | assignee",
+    "- Shared assignee shorthand: create in <project>: Assignee | description 1 ; description 2 ; description 3",
+    "- I will generate a shorter title automatically when you use the shared-assignee shorthand",
     "- Search is case-insensitive and fuzzy, and can match title plus description text",
     "- You can filter search or list results by assignee",
     "- If a workspace or task name is unclear, I will suggest matches in Slack",
@@ -861,6 +865,36 @@ export function parseHumanCommand(text, fallbackWorkspace) {
     };
   }
 
+  function parseStructuredTaskLine(rawLine, rowLabel) {
+    const parts = String(rawLine || "")
+      .split("|")
+      .map((part) => part.trim());
+
+    if (parts.length < 3) {
+      throw new Error(`${rowLabel} is invalid. Use '<task title> | <description> | <assignee>'.`);
+    }
+
+    const [title, description, assignee] = parts;
+    const list = parts[3]?.trim() || "";
+
+    if (!title) {
+      throw new Error(`${rowLabel} is missing a task title.`);
+    }
+    if (!description) {
+      throw new Error(`${rowLabel} is missing a description.`);
+    }
+    if (!assignee) {
+      throw new Error(`${rowLabel} is missing an assignee.`);
+    }
+
+    return {
+      title,
+      description,
+      assignee,
+      list
+    };
+  }
+
   function deriveTitleFromDescription(description) {
     const cleaned = String(description || "").replace(/\s+/g, " ").trim();
     if (!cleaned) {
@@ -959,32 +993,54 @@ export function parseHumanCommand(text, fallbackWorkspace) {
       );
     }
 
-    return rows.map((row, index) => {
-      const parts = row.split("|").map((part) => part.trim());
-      if (parts.length < 3) {
-        throw new Error(
-          `Row ${index + 1} is invalid. Use exactly this format per line: '<task title> | <description> | <assignee>'.`
-        );
-      }
+    return rows.map((row, index) => parseStructuredTaskLine(row, `Row ${index + 1}`));
+  }
 
-      const [title, description, assignee, list] = parts;
-      if (!title) {
-        throw new Error(`Row ${index + 1} is missing a task title.`);
-      }
-      if (!description) {
-        throw new Error(`Row ${index + 1} is missing a description.`);
-      }
-      if (!assignee) {
-        throw new Error(`Row ${index + 1} is missing an assignee.`);
-      }
+  function parseSharedAssigneeBulkBody(rawBody) {
+    const [assigneePart, descriptionsPart] = String(rawBody || "").split(/\s*\|\s*/, 2);
 
-      return {
-        title,
-        description,
-        assignee,
-        list: list || ""
-      };
-    });
+    if (!assigneePart || !descriptionsPart) {
+      throw new Error(
+        "Shared assignee bulk create should look like: 'create in DataCX - Active: Akash H | Task description 1 ; Task description 2'."
+      );
+    }
+
+    const assignee = assigneePart.trim();
+    const descriptions = descriptionsPart
+      .split(/\s*;\s*/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    if (!descriptions.length) {
+      throw new Error("Please include at least one task description after the assignee.");
+    }
+
+    return descriptions.map((description) => ({
+      title: deriveTitleFromDescription(description),
+      description,
+      assignee,
+      list: ""
+    }));
+  }
+
+  function looksLikeStructuredBulkRows(rawBody) {
+    const rows = String(rawBody || "")
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((row) => row.trim())
+      .filter(Boolean);
+
+    return rows.length > 0 && rows.every((row) => row.split("|").length >= 3);
+  }
+
+  function looksLikeSharedAssigneeBulk(rawBody) {
+    const body = String(rawBody || "");
+    const parts = body.split("|");
+    if (parts.length !== 2) {
+      return false;
+    }
+
+    return parts[1].includes(";");
   }
 
   function parseUpdateSegments(rawBody) {
@@ -1071,6 +1127,16 @@ export function parseHumanCommand(text, fallbackWorkspace) {
       );
     }
 
+    if (looksLikeStructuredBulkRows(bulkCreateMatch[2])) {
+      return {
+        action: "bulk_import",
+        payload: {
+          workspace: bulkCreateMatch[1]?.trim() || fallbackWorkspace,
+          rows: parseImportBody(bulkCreateMatch[2])
+        }
+      };
+    }
+
     const parsedBody = parseBulkBody(bulkCreateMatch[2]);
     validateCreateRequirements(parsedBody, { bulk: true });
     return {
@@ -1118,6 +1184,39 @@ export function parseHumanCommand(text, fallbackWorkspace) {
       throw new Error(
         "Please choose a workspace in the command. Example: 'create in DataCX - Active: Fix login timeout'."
       );
+    }
+
+    if (looksLikeStructuredBulkRows(createMatch[2])) {
+      return {
+        action: "bulk_import",
+        payload: {
+          workspace: createMatch[1]?.trim() || fallbackWorkspace,
+          rows: parseImportBody(createMatch[2])
+        }
+      };
+    }
+
+    if (looksLikeSharedAssigneeBulk(createMatch[2])) {
+      return {
+        action: "bulk_import",
+        payload: {
+          workspace: createMatch[1]?.trim() || fallbackWorkspace,
+          rows: parseSharedAssigneeBulkBody(createMatch[2])
+        }
+      };
+    }
+
+    const structuredParts = createMatch[2].split("|").map((segment) => segment.trim()).filter(Boolean);
+    if (structuredParts.length >= 3) {
+      return {
+        action: "create",
+        payload: {
+          workspace: createMatch[1]?.trim() || fallbackWorkspace,
+          title: structuredParts[0],
+          description: structuredParts[1],
+          assignees: [structuredParts[2]]
+        }
+      };
     }
 
     const parsedBody = parseCreateBody(createMatch[2]);
