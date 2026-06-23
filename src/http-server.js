@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import express from "express";
 import { waitUntil } from "@vercel/functions";
 import { config } from "./config.js";
-import { findWorkspaceMatches, getRecord, listLists, searchRecords } from "./blue-api.js";
+import { findWorkspaceMatches, getRecord, listLists, listWorkspaces, searchRecords } from "./blue-api.js";
 import { buildDailySummary } from "./summary-service.js";
 import { addSummaryEvent, isSummaryStoreConfigured } from "./summary-store.js";
 import { dispatchHumanCommand, dispatchParsedCommand, parseHumanCommand } from "./task-router.js";
@@ -36,6 +36,7 @@ app.get("/routes", (_req, res) => {
       slackInteractions: "/slack/interactions",
       blueWebhook: "/blue/webhooks",
       dailySummary: "/cron/daily-summary",
+      debugWorkspaces: "/debug/workspaces",
       emailInbound: "/email/inbound"
     }
   });
@@ -1198,8 +1199,41 @@ async function runDailySummary(req, res) {
   }
 }
 
+async function runWorkspaceDebug(req, res) {
+  try {
+    if (!verifySharedSecret(req, config.cronSecret, "x-cron-secret")) {
+      return res.status(401).json({ ok: false, error: "Invalid cron secret" });
+    }
+
+    const result = await listWorkspaces();
+    const workspaces = Array.isArray(result.data) ? result.data : [];
+    const query = String(req.query?.q || req.body?.q || "").trim().toLowerCase();
+    const filtered = query
+      ? workspaces.filter((workspace) => {
+          return (
+            String(workspace.id || "").toLowerCase().includes(query) ||
+            String(workspace.name || "").toLowerCase().includes(query) ||
+            String(workspace.slug || "").toLowerCase().includes(query)
+          );
+        })
+      : workspaces;
+
+    return res.json({
+      ok: true,
+      companyId: config.blueCompanyId,
+      totalCount: workspaces.length,
+      filteredCount: filtered.length,
+      items: filtered
+    });
+  } catch (error) {
+    return res.status(400).json({ ok: false, error: error.message });
+  }
+}
+
 app.get("/cron/daily-summary", runDailySummary);
 app.post("/cron/daily-summary", express.json(), runDailySummary);
+app.get("/debug/workspaces", runWorkspaceDebug);
+app.post("/debug/workspaces", express.json(), runWorkspaceDebug);
 
 app.use("/slack/events", express.raw({ type: "application/json" }));
 app.use("/slack/commands", express.raw({ type: "application/x-www-form-urlencoded" }));
