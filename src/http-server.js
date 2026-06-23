@@ -1170,7 +1170,8 @@ async function runDailySummary(req, res) {
       return res.status(401).json({ ok: false, error: "Invalid cron secret" });
     }
 
-    const summary = await buildDailySummary();
+    const debug = String(req.query?.debug || req.body?.debug || "").toLowerCase() === "1";
+    const summary = await buildDailySummary({ debug });
     const dryRun = String(req.query?.dryRun || req.body?.dryRun || "").toLowerCase() === "1";
 
     if (!dryRun) {
@@ -1188,6 +1189,7 @@ async function runDailySummary(req, res) {
     return res.json({
       ok: true,
       dryRun,
+      debug,
       posted: !dryRun,
       ...summary
     });

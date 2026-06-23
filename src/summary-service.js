@@ -77,14 +77,32 @@ async function getTrackedWorkspaces(events = []) {
 
   if (configuredRefs.length) {
     const workspaces = [];
+    const skipped = [];
     for (const ref of configuredRefs) {
       try {
         workspaces.push(await resolveWorkspace(ref));
       } catch (error) {
         console.warn(`Skipping summary workspace '${ref}':`, error.message);
+        skipped.push({
+          ref,
+          error: error.message
+        });
       }
     }
-    return uniqueBy(workspaces, (workspace) => workspace.id);
+    return {
+      workspaces: uniqueBy(workspaces, (workspace) => workspace.id),
+      debug: {
+        mode: "configured",
+        configuredRefs,
+        resolvedRefs: workspaces.map((workspace) => ({
+          ref: workspace.slug || workspace.name || workspace.id,
+          id: workspace.id,
+          name: workspace.name,
+          slug: workspace.slug || ""
+        })),
+        skippedRefs: skipped
+      }
+    };
   }
 
   const workspaceResult = await listWorkspaces();
@@ -93,7 +111,20 @@ async function getTrackedWorkspaces(events = []) {
   );
 
   if (allWorkspaces.length) {
-    return allWorkspaces;
+    return {
+      workspaces: allWorkspaces,
+      debug: {
+        mode: "all_accessible",
+        configuredRefs: [],
+        resolvedRefs: allWorkspaces.map((workspace) => ({
+          ref: workspace.slug || workspace.name || workspace.id,
+          id: workspace.id,
+          name: workspace.name,
+          slug: workspace.slug || ""
+        })),
+        skippedRefs: []
+      }
+    };
   }
 
   const fallback = events
@@ -105,7 +136,20 @@ async function getTrackedWorkspaces(events = []) {
     }))
     .filter((workspace) => workspace.id && workspace.name);
 
-  return uniqueBy(fallback, (workspace) => workspace.id);
+  return {
+    workspaces: uniqueBy(fallback, (workspace) => workspace.id),
+    debug: {
+      mode: "events_fallback",
+      configuredRefs: [],
+      resolvedRefs: fallback.map((workspace) => ({
+        ref: workspace.slug || workspace.name || workspace.id,
+        id: workspace.id,
+        name: workspace.name,
+        slug: workspace.slug || ""
+      })),
+      skippedRefs: []
+    }
+  };
 }
 
 async function loadCurrentInProgressTasks(workspace, inProgressLists) {
@@ -120,10 +164,26 @@ async function loadCurrentInProgressTasks(workspace, inProgressLists) {
 
   const result = await listRecords(project, { done: false });
   const tasks = Array.isArray(result.data) ? result.data : [];
+  const openListNames = uniqueBy(
+    tasks
+      .map((task) => task.list?.name)
+      .filter(Boolean)
+      .map((name) => ({ name })),
+    (item) => normalizeLookupValue(item.name)
+  ).map((item) => item.name);
 
-  return tasks
+  const inProgressTasks = tasks
     .filter((task) => isListMatch(task.list?.name, inProgressLists))
     .sort((left, right) => left.title.localeCompare(right.title));
+
+  return {
+    tasks: inProgressTasks,
+    debug: {
+      openTaskCount: tasks.length,
+      openListNames,
+      inProgressTaskCount: inProgressTasks.length
+    }
+  };
 }
 
 function groupEventsByWorkspace(events) {
@@ -176,7 +236,8 @@ function buildWorkspaceSection(workspace, { inProgressTasks, movedBeyondTodo }) 
   return lines.join("\n");
 }
 
-export async function buildDailySummary() {
+export async function buildDailySummary(options = {}) {
+  const debugEnabled = Boolean(options.debug);
   const now = Date.now();
   const windowStart = now - config.summaryWindowHours * 60 * 60 * 1000;
   const cleanupBefore = now - config.summaryRetentionHours * 60 * 60 * 1000;
@@ -192,9 +253,21 @@ export async function buildDailySummary() {
     ? await getSummaryEventsBetween(windowStart, now)
     : [];
 
-  const workspaces = await getTrackedWorkspaces(storedEvents);
+  const tracked = await getTrackedWorkspaces(storedEvents);
+  const workspaces = tracked.workspaces;
   const eventsByWorkspace = groupEventsByWorkspace(storedEvents);
   const sections = [];
+  const debug = {
+    enabled: debugEnabled,
+    config: {
+      summaryWorkspaceRefs: config.summaryWorkspaceRefs,
+      inProgressLists,
+      doneLists,
+      todoLists
+    },
+    workspaceResolution: tracked.debug,
+    workspaces: []
+  };
 
   for (const workspace of workspaces) {
     const workspaceEvents = (eventsByWorkspace.get(workspace.id) || [])
@@ -205,7 +278,21 @@ export async function buildDailySummary() {
       workspaceEvents.filter((event) => isMovedBeyondTodo(event, listGroups)),
       (event) => event.taskId || `${event.taskTitle}:${event.toList}:${event.occurredAt}`
     );
-    const inProgressTasks = await loadCurrentInProgressTasks(workspace, inProgressLists);
+    const inProgressResult = await loadCurrentInProgressTasks(workspace, inProgressLists);
+    const inProgressTasks = inProgressResult.tasks;
+
+    if (debugEnabled) {
+      debug.workspaces.push({
+        id: workspace.id,
+        name: workspace.name,
+        slug: workspace.slug || "",
+        inProgressTaskCount: inProgressResult.debug.inProgressTaskCount,
+        openTaskCount: inProgressResult.debug.openTaskCount,
+        openListNames: inProgressResult.debug.openListNames,
+        movedBeyondTodoCount: movedBeyondTodo.length,
+        includedInSummary: Boolean(inProgressTasks.length || movedBeyondTodo.length)
+      });
+    }
 
     if (!inProgressTasks.length && !movedBeyondTodo.length) {
       continue;
@@ -226,7 +313,8 @@ export async function buildDailySummary() {
       ok: true,
       text: "Daily Blue Summary\n\nNo in-progress work or moves beyond To do were found in the last 24 hours.",
       workspaceCount: 0,
-      eventCount: storedEvents.length
+      eventCount: storedEvents.length,
+      ...(debugEnabled ? { debug } : {})
     };
   }
 
@@ -234,6 +322,7 @@ export async function buildDailySummary() {
     ok: true,
     text: ["Daily Blue Summary", ...sections].join("\n\n"),
     workspaceCount: sections.length,
-    eventCount: storedEvents.length
+    eventCount: storedEvents.length,
+    ...(debugEnabled ? { debug } : {})
   };
 }
