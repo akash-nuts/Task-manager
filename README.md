@@ -152,6 +152,7 @@ Optional env vars:
 - `SUMMARY_RETENTION_HOURS`
 - `SUMMARY_WINDOW_HOURS`
 - `SUMMARY_IN_PROGRESS_LISTS`
+- `SUMMARY_DONE_LISTS`
 - `SUMMARY_TODO_LISTS`
 - `SUMMARY_WORKSPACES`
 
@@ -161,6 +162,7 @@ Default behavior:
 - The digest looks back `24` hours
 - Current `In Progress` tasks are listed per workspace
 - Tasks moved beyond `To do` are listed per workspace
+- List matching can be customized with `SUMMARY_IN_PROGRESS_LISTS`, `SUMMARY_DONE_LISTS`, and `SUMMARY_TODO_LISTS`
 
 Vercel cron:
 

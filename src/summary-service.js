@@ -46,14 +46,30 @@ function isListMatch(listName, candidates) {
   return candidates.some((candidate) => normalizeLookupValue(candidate) === normalized);
 }
 
-function isMovedBeyondTodo(event, todoLists) {
+function classifyListStage(listName, { todoLists, inProgressLists, doneLists }) {
+  if (isListMatch(listName, todoLists)) {
+    return "todo";
+  }
+
+  if (isListMatch(listName, inProgressLists)) {
+    return "in_progress";
+  }
+
+  if (isListMatch(listName, doneLists)) {
+    return "done";
+  }
+
+  return "other";
+}
+
+function isMovedBeyondTodo(event, listGroups) {
   if (!event?.fromList || !event?.toList) {
     return false;
   }
 
-  const fromIsTodo = isListMatch(event.fromList, todoLists);
-  const toIsTodo = isListMatch(event.toList, todoLists);
-  return fromIsTodo && !toIsTodo;
+  const fromStage = classifyListStage(event.fromList, listGroups);
+  const toStage = classifyListStage(event.toList, listGroups);
+  return fromStage === "todo" && toStage !== "todo";
 }
 
 async function getTrackedWorkspaces(events = []) {
@@ -166,6 +182,12 @@ export async function buildDailySummary() {
   const cleanupBefore = now - config.summaryRetentionHours * 60 * 60 * 1000;
   const todoLists = splitCsv(config.summaryTodoLists);
   const inProgressLists = splitCsv(config.summaryInProgressLists);
+  const doneLists = splitCsv(config.summaryDoneLists);
+  const listGroups = {
+    todoLists,
+    inProgressLists,
+    doneLists
+  };
   const storedEvents = isSummaryStoreConfigured()
     ? await getSummaryEventsBetween(windowStart, now)
     : [];
@@ -180,7 +202,7 @@ export async function buildDailySummary() {
       .sort((left, right) => Number(right.occurredAt || 0) - Number(left.occurredAt || 0));
 
     const movedBeyondTodo = uniqueBy(
-      workspaceEvents.filter((event) => isMovedBeyondTodo(event, todoLists)),
+      workspaceEvents.filter((event) => isMovedBeyondTodo(event, listGroups)),
       (event) => event.taskId || `${event.taskTitle}:${event.toList}:${event.occurredAt}`
     );
     const inProgressTasks = await loadCurrentInProgressTasks(workspace, inProgressLists);

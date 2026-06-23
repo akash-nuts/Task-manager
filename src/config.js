@@ -61,6 +61,7 @@ export const config = {
   summaryRetentionHours: Number(process.env.SUMMARY_RETENTION_HOURS || 36),
   summaryWindowHours: Number(process.env.SUMMARY_WINDOW_HOURS || 24),
   summaryInProgressLists: process.env.SUMMARY_IN_PROGRESS_LISTS || "In Progress",
+  summaryDoneLists: process.env.SUMMARY_DONE_LISTS || "Done,Completed,Closed",
   summaryTodoLists: process.env.SUMMARY_TODO_LISTS || "To do,Todo,Backlog",
   summaryWorkspaceRefs: process.env.SUMMARY_WORKSPACES || ""
 };
