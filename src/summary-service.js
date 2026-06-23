@@ -9,6 +9,10 @@ function normalizeLookupValue(value) {
     .trim();
 }
 
+function compactLookupValue(value) {
+  return normalizeLookupValue(value).replace(/\s+/g, "");
+}
+
 function splitCsv(value) {
   return String(value || "")
     .split(",")
@@ -43,7 +47,11 @@ function uniqueBy(items, keyFn) {
 
 function isListMatch(listName, candidates) {
   const normalized = normalizeLookupValue(listName);
-  return candidates.some((candidate) => normalizeLookupValue(candidate) === normalized);
+  const compact = compactLookupValue(listName);
+  return candidates.some((candidate) => {
+    const normalizedCandidate = normalizeLookupValue(candidate);
+    return normalizedCandidate === normalized || compactLookupValue(candidate) === compact;
+  });
 }
 
 function classifyListStage(listName, { todoLists, inProgressLists, doneLists }) {

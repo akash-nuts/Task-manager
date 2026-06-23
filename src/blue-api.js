@@ -364,7 +364,7 @@ async function setTodoCustomFields(todoId, customFields) {
 export async function listWorkspaces() {
   const query = `
     query ListWorkspaces($companyId: String!) {
-      projectList(filter: { companyIds: [$companyId] }, first: 200) {
+      projectList(filter: { companyIds: [$companyId] }, first: 1000) {
         items {
           id
           name
